@@ -2,7 +2,7 @@
 
 ## Source of truth
 
-- **Status:** Active. **Last refreshed:** 2026-10-24.
+- **Status:** Active. **Last refreshed:** 2026-10-25.
 - **Current direction:** River Clear. The product owner approved the two-column Focus arrangement and fresh water-colored palette after a Claude/Codex design discussion. The native implementation uses these as the starting arrangement and appearance for new preferences.
 - **Primary surfaces:** Native macOS welcome screen, Git review workspace, task planning/preparation, and task information.
 - **Evidence:** [Product scope](README.md), [River Clear rules](docs/design/river-clear.md), [familiar Git layouts](docs/design/familiar-git-layouts.md), and [current limitations](docs/limitations.md). Implementation lives in [WorkbenchUI](apps/macos/Sources/WorkbenchUI), particularly `WorkbenchTheme`, `LayoutPreferences`, `DockWorkspace`, `WorkspaceContextHeader`, and `FolderLocationControl`.
@@ -43,6 +43,7 @@
 - **Pane enlargement:** A pane can temporarily fill the work area with an explicit return action. Retain the complete dock tree and its ratios rather than hiding its siblings or overwriting saved preferences. This is distinct from the two-pane Focus starting arrangement.
 - Stash selection is read-only and replaces the file/Diff content; explicit return restores current changes. Branch selection reads history without checkout. Both use real Git data.
 - Task information records purpose, completion criteria, references, notes, checks, and reports. App-run observations are distinct from human/AI reports. Hunk requests and handoff drafts use explicit preview/copy; the app does not invoke providers.
+- **Evidence and next action:** In task information, show a compact current-folder summary before the expandable receipt history. Keep failure, unknown, changed-code/requirements and unavailable observations visible while history is collapsed. State the recent-record bound and keep author reports separate. A matching Git check proves only its tracked hygiene scope; it never establishes criterion fulfillment, test success or merge readiness. Reuse this summary per repository in handoff, including unprepared or unqueried targets. Existing preview/copy offers only handoff and verification-request drafts; preserve edits, dismiss on scope change, and state that collected observations may be older than the current code. Verification requests ask for actual behavior and inspectable evidence, without invoking an agent or reading reference content. [Workflow direction](docs/ai-workflow.md).
 - **App updates:** Put ‘업데이트 확인…’ in the native River menu and automatic-check preferences in native Settings. Keep update controls out of the Git workspace toolbar. Check daily by default; download and installation require user action. Before restarting, block active work across all visited locations and explain session draft loss or uncertain outcomes. Pending installation remains reachable after choosing Later.
 - **Remote operations:** A named `원격` disclosure sits beside the current-folder context in both tab and repository-track navigation. Keep remote selection, endpoint details, fetched branches, synchronization, and URL management in that disclosure; do not add a permanent action row or pane. Clone is a secondary welcome/menu action with one sheet.
 

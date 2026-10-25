@@ -2281,3 +2281,186 @@ func everyUncertainContextWriteChangesConsentIdentityBeyondVisibleOriginPrefix(s
   #expect(store.updateRestartWarning == displayed)
   #expect(store.updateRestartConsentIdentity != identity)
 }
+
+// Keep the real context/store RPC path; only supply evidence absent from the
+// older shared fixture. These helpers do not execute or simulate a Git check.
+private func requestReceiptJSON(id: String, repo: String = "a", op: String? = "op",
+                                verdict: String = "passed", requirements: String = "goal-7") -> [String: Any] {
+  ["id": id, "repo_id": repo, "op_id": op as Any? ?? NSNull(),
+   "path": "/tmp/synthetic-\(repo)", "branch": "refs/heads/work", "head": "head",
+   "snapshot_hash": "code", "after_snapshot_hash": "code", "requirements_hash": requirements,
+   "kind": "git_check", "verdict": verdict, "started_at": 1, "finished_at": 2,
+   "command": "git diff --check", "note": "", "output": "", "truncated": false]
+}
+
+private func requestContextEvidence(_ response: [String: Any], receipts: [[String: Any]]) -> [String: Any] {
+  var response = response
+  guard var bundle = response["result"] as? [String: Any],
+    var context = bundle["context"] as? [String: Any] else { return response }
+  context["criteria"] = ["Check the actual feature behavior"]
+  bundle["context"] = context; bundle["verifications"] = receipts; response["result"] = bundle
+  return response
+}
+
+private func requestObservationSection(_ text: String, heading: String) throws -> String {
+  let headingRange = try #require(text.range(of: "\n### \(heading)"))
+  let remaining = text[headingRange.upperBound...]
+  let nextSection = [remaining.range(of: "\n### ")?.lowerBound,
+    remaining.range(of: "\n## ")?.lowerBound].compactMap { $0 }.min() ?? text.endIndex
+  return String(text[headingRange.lowerBound..<nextSection])
+}
+
+@Test @MainActor func verificationRequestKeepsTaskAndOriginalFolderEvidenceSeparate() async throws {
+  let replies = ScopedContextReplies()
+  let server = try TestService { request in
+    let response = replies.respond(request)
+    guard request["method"] as? String == "get_task_context" else { return response }
+    return requestContextEvidence(response, receipts: [
+      requestReceiptJSON(id: "task-a-failed", verdict: "failed"),
+      requestReceiptJSON(id: "task-b-passed", repo: "b"),
+      requestReceiptJSON(id: "original-a-passed", op: nil),
+    ])
+  }
+  let model = TaskContextStore()
+  model.configure(client: ServiceClient(socketPath: server.path), workspace: "space",
+    location: .init(repoId: "a"), contextOperationID: "op", operation: try operation(), title: "Task")
+  await model.refresh()
+  let draft = try #require(await model.handoff(purpose: .verify))
+  let taskA = try requestObservationSection(draft, heading: "\"a\" · 작업용 폴더")
+  let originalA = try requestObservationSection(draft, heading: "\"a\" · 원래 프로젝트 폴더")
+  #expect(taskA.contains("검증 요약: 현재 공백·충돌 검사 실패"))
+  #expect(taskA.contains("검증 task-a-failed:"))
+  #expect(!taskA.contains("original-a-passed"))
+  #expect(originalA.contains("검증 요약: 현재 공백·충돌 검사 통과"))
+  #expect(originalA.contains("검증 original-a-passed:"))
+  #expect(!originalA.contains("task-a-failed"))
+  #expect(replies.lock.withLock { replies.statusSelections } == [
+    .init(repoId: "a", opId: "op"), .init(repoId: "b", opId: "op"), .init(repoId: "a"),
+  ])
+  #expect(replies.lock.withLock { replies.requests.allSatisfy {
+    $0.method == "get_task_context" && $0.scope == "op" && $0.target == nil
+  } })
+  #expect(replies.lock.withLock { replies.mutationCalls.isEmpty })
+}
+
+@Test @MainActor func verificationRequestStatusFailureCannotPromoteStoredPass() async throws {
+  let replies = ScopedContextReplies(); replies.statusFails = true
+  let server = try TestService { request in
+    let response = replies.respond(request)
+    guard request["method"] as? String == "get_task_context" else { return response }
+    return requestContextEvidence(response, receipts: [requestReceiptJSON(id: "old-pass", op: nil)])
+  }
+  let model = TaskContextStore()
+  model.configure(client: ServiceClient(socketPath: server.path), workspace: "space",
+    location: .init(repoId: "a"), contextOperationID: nil, operation: nil, title: "A")
+  await model.refresh()
+  let draft = try #require(await model.handoff(purpose: .verify))
+  let original = try requestObservationSection(draft, heading: "\"a\" · 원래 프로젝트 폴더")
+  #expect(original.contains("현재 상태 미조회:"))
+  #expect(original.contains("검증 요약: 현재 폴더 상태를 확인하지 못했습니다"))
+  #expect(!original.contains("검증 요약: 현재 공백·충돌 검사 통과"))
+  #expect(original.contains("검증 old-pass:"))
+  #expect(original.contains("이 대상의 현재 상태 미조회"))
+  #expect(replies.lock.withLock { replies.statusSelections } == [.init(repoId: "a")])
+  #expect(replies.lock.withLock { replies.requests.allSatisfy { $0.method == "get_task_context" } })
+}
+
+@Test @MainActor func verificationRequestKeepsReadFailedAndUnpreparedSiblingsActionable() async throws {
+  let replies = ScopedContextReplies()
+  let server = try TestService { request in
+    let response = replies.respond(request)
+    let method = request["method"] as? String
+    if method == "get_task_context" {
+      return requestContextEvidence(response, receipts: [
+        requestReceiptJSON(id: "a-pass"), requestReceiptJSON(id: "b-old-pass", repo: "b"),
+        requestReceiptJSON(id: "c-old-pass", repo: "c"),
+      ])
+    }
+    if method == "get_repo_status", (request["params"] as? [String: Any])?["repo_id"] as? String == "b" {
+      return ["schema_version": 1, "error": ["code": "git_failed", "message": "synthetic sibling unavailable"]]
+    }
+    return response
+  }
+  var value = operationJSON()
+  var repos = try #require(value["repos"] as? [[String: Any]])
+  var pending = try #require(repos.last)
+  var plan = try #require(pending["plan"] as? [String: Any])
+  plan["repo_id"] = "c"; plan["worktree_path"] = "/tmp/synthetic-c"
+  pending["plan"] = plan; pending["state"] = "waiting_for_worktree"; pending.removeValue(forKey: "baseline")
+  repos.append(pending); value["repos"] = repos
+  let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+  let op = try decoder.decode(WorkbenchOperation.self, from: JSONSerialization.data(withJSONObject: value))
+  let model = TaskContextStore()
+  model.configure(client: ServiceClient(socketPath: server.path), workspace: "space",
+    location: .init(repoId: "a", opId: "op"), contextOperationID: "op", operation: op, title: "Task")
+  await model.refresh()
+  let draft = try #require(await model.handoff(purpose: .verify))
+  let observed = try requestObservationSection(draft, heading: "\"a\" · 작업용 폴더")
+  let failed = try requestObservationSection(draft, heading: "\"b\" · 작업용 폴더")
+  let unprepared = try requestObservationSection(draft, heading: "\"c\" · 작업용 폴더")
+  #expect(observed.contains("검증 요약: 현재 공백·충돌 검사 통과"))
+  #expect(failed.contains("검증 요약: 현재 폴더 상태를 확인하지 못했습니다"))
+  #expect(failed.contains("다음 확인:"))
+  #expect(!failed.contains("검증 요약: 현재 공백·충돌 검사 통과"))
+  #expect(unprepared.contains("현재 상태 미조회: 워크트리 준비 전"))
+  #expect(unprepared.contains("다음 확인:"))
+  #expect(!unprepared.contains("검증 c-old-pass:"))
+  #expect(replies.lock.withLock { replies.statusSelections } == [
+    .init(repoId: "a", opId: "op"), .init(repoId: "b", opId: "op"),
+  ])
+  #expect(!draft.contains("원래 프로젝트 폴더"))
+}
+
+@Test @MainActor func verificationRequestInvalidatesOldRequirementsAndDisclosesCollectionDrift() async throws {
+  let replies = Replies()
+  let server = try TestService { request in
+    let response = replies.respond(request)
+    if request["method"] as? String == "get_task_context" {
+      return requestContextEvidence(response, receipts: [
+        requestReceiptJSON(id: "previous-goal-pass", op: nil, requirements: "goal-1"),
+      ])
+    }
+    if request["method"] as? String == "get_repo_status" {
+      replies.lock.withLock { replies.revision = 3 }
+    }
+    return response
+  }
+  let model = TaskContextStore()
+  model.configure(client: ServiceClient(socketPath: server.path), workspace: "space",
+    location: .init(repoId: "a"), contextOperationID: nil, operation: nil, title: "A")
+  await model.refresh()
+  replies.lock.withLock { replies.revision = 2 }
+  let draft = try #require(await model.handoff(purpose: .verify))
+  #expect(draft.contains("완료 조건 식별자: goal-2"))
+  #expect(draft.contains("검증 요약: 검사 뒤 완료 조건이 바뀌었습니다"))
+  #expect(!draft.contains("검증 요약: 현재 공백·충돌 검사 통과"))
+  #expect(draft.contains("수집 중 작업 정보가 변경되었습니다"))
+  #expect(draft.contains("revision 2 기준"))
+  #expect(draft.contains("River가 개별 조건과 증거를 연결하거나 충족 여부를 판단한 결과가 아닙니다"))
+  #expect(!model.isDirty)
+}
+
+@Test @MainActor func verificationRequestNavigationDuringCollectionReturnsNoOriginDraft() async throws {
+  let replies = Replies(); replies.purpose = "origin-only purpose"
+  let server = try TestService { request in
+    requestContextEvidence(replies.respond(request), receipts: [])
+  }
+  let model = TaskContextStore(); let client = ServiceClient(socketPath: server.path)
+  model.configure(client: client, workspace: "space", location: .init(repoId: "a"),
+    contextOperationID: nil, operation: nil, title: "Origin")
+  await model.refresh()
+  replies.lock.withLock { replies.holdGet = true }
+  let collecting = Task { await model.handoff(purpose: .verify) }
+  try await wait(replies.arrived)
+  model.configure(client: client, workspace: "space", location: .init(repoId: "b"),
+    contextOperationID: nil, operation: nil, title: "Destination")
+  replies.lock.withLock { replies.purpose = "destination-only purpose"; replies.revision = 2 }
+  await model.refresh()
+  replies.gate.signal()
+  #expect(await collecting.value == nil)
+  #expect(model.bundle?.context.purpose == "destination-only purpose")
+  #expect(model.draft?.purpose == "destination-only purpose")
+  #expect(!model.isDirty)
+  #expect(!model.working)
+  #expect(model.inFlightWorkCount == 0)
+}

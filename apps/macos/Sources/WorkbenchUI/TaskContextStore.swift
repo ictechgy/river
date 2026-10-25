@@ -209,7 +209,7 @@ public final class TaskContextStore: ObservableObject {
     return false
   }
   /// Collect individual observations; partial worktrees never imply an integration pass.
-  public func handoff() async -> String? {
+  public func handoff(purpose: TaskRequestPurpose = .handoff) async -> String? {
     guard let client, let location, scopeResolved, loaded, !working, !isDirty else {
       message = isDirty ? "작성 중인 작업 정보를 먼저 저장하거나 저장본을 다시 불러온 뒤 인수인계를 만들어 주세요." : "작업 정보를 불러온 뒤 인수인계를 다시 만들어 주세요."
       return nil
@@ -237,17 +237,26 @@ public final class TaskContextStore: ObservableObject {
       }
       for (repo, op, label, exists) in targets {
         text += "\n### \(HandoffText.field(repo)) · \(label)\n"
-        guard exists else { text += "현재 상태 미조회: 워크트리 준비 전. 성공으로 판단하지 마세요.\n"; continue }
+        guard exists else {
+          text += "현재 상태 미조회: 워크트리 준비 전. 성공으로 판단하지 마세요.\n다음 확인: 작업용 폴더를 준비한 뒤 실제 코드와 검증 상태를 확인하세요.\n"
+          continue
+        }
         var observedSnapshot: String?
+        var observedConflict = false
         var values: [String: JSONValue] = ["repo_id": .string(repo)]
         if let op { values["op_id"] = .string(op) }
         do {
           let status: RepositoryStatus = try await client.call("get_repo_status", params: values)
           observedSnapshot = status.snapshotHash
+          observedConflict = status.conflict
           text += "관찰: \(Date().ISO8601Format())\n경로: \(HandoffText.field(status.path))\n브랜치: \(HandoffText.field(status.snapshot.branch))\nHEAD: \(status.snapshot.head)\n변경 상태: \(status.snapshotHash)\n충돌/진행 중 Git 작업: \(status.conflict)\n변경 파일: \(status.files.count)개\n"
           text += status.files.prefix(100).map { "- \(HandoffText.field($0.path)) [스테이징: \($0.isStaged), 작업 변경: \($0.isWorking)]" }.joined(separator: "\n") + "\n"
           if status.files.count > 100 { text += "(앞의 100개만 표시)\n" }
         } catch { text += "현재 상태 미조회: \(HandoffText.field(String(String(describing: error).prefix(300)))). 부분 수집이며 검증 통과가 아닙니다.\n" }
+        let summary = TaskEvidenceSummary(context: c, receipts: start.verifications,
+          repoID: repo, opID: op, snapshot: observedSnapshot, conflict: observedConflict)
+        text += "\n검증 요약: \(summary.headline)\n다음 확인: \(summary.nextAction)\n\(summary.reportsDescription)\n\(summary.scopeDescription)\n"
+        if let result = summary.latestResultDescription { text += result + "\n" }
         for receipt in start.verifications.filter({ $0.repoId == repo && $0.opId == op }).prefix(5) {
           text += Self.receiptText(receipt, context: c, snapshot: observedSnapshot)
         }
@@ -258,7 +267,7 @@ public final class TaskContextStore: ObservableObject {
       guard version == token else { message = "수집 중 위치가 바뀌었습니다. 현재 위치에서 인수인계를 다시 만들어 주세요."; return nil }
       if end.context.revision != c.revision { text += "\n주의: 수집 중 작업 정보가 변경되었습니다. 위 내용은 revision \(c.revision) 기준입니다. 다시 생성해 최신 내용을 확인하세요.\n" }
       text += "\n자동 검사는 추적 중 파일의 공백/충돌 검사만 포함합니다. 빌드·테스트·untracked·서브모듈 내용은 검사하지 않습니다. AI/직접 기록은 앱이 실행을 관찰한 결과가 아닙니다.\n"
-      return text
+      return purpose.draft(observations: text)
     } catch {
       if version == token { message = "인수인계 정보를 수집하지 못했습니다. 새로고침 후 다시 시도하세요." }
       return nil

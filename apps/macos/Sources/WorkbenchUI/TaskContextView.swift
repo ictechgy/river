@@ -10,6 +10,8 @@ struct TaskContextView: View {
   @State private var editorIdentity = ""
   @State private var reportIdentity = ""
   @State private var handoffText: String?
+  @State private var handoffIdentity: String?
+  @State private var handoffPurpose: TaskRequestPurpose = .handoff
   private var canRecord: Bool {
     model.loaded && !model.working && !model.isDirty && !store.busy
       && !store.validatingSelection && store.repository != nil && !store.hasRunningOperation
@@ -69,36 +71,57 @@ struct TaskContextView: View {
           Spacer()
           if model.working { ProgressView().controlSize(.small) }
         }
+        if let bundle = model.bundle {
+          let observed = model.loaded && !store.validatingSelection && !store.selectionCheckFailed
+            ? store.repository : nil
+          let summary = TaskEvidenceSummary(context: bundle.context, receipts: bundle.verifications,
+            repoID: store.selection?.repoId ?? "", opID: store.selection?.opId,
+            snapshot: observed?.snapshotHash, conflict: observed?.conflict ?? false)
+          VStack(alignment: .leading, spacing: 5) {
+            Text(summary.headline).font(.system(size: 12, weight: .medium))
+            Text(summary.nextAction).font(.system(size: 12)).foregroundStyle(.secondary)
+            if let result = summary.latestResultDescription {
+              Text(result).font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            Text("조회한 최근 \(min(bundle.verifications.count, 50))개 중 이 폴더 \(summary.targetReceiptCount)개")
+              .font(.system(size: 11)).foregroundStyle(.secondary)
+            if summary.reportedCount > 0 {
+              Text(summary.reportsDescription).font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+          }.fixedSize(horizontal: false, vertical: true)
+        }
         Button("공백 · 충돌 마커 검사", systemImage: "play.circle") {
           guard let snapshot = store.repository?.snapshotHash, let location = store.selection else { return }
           Task { await model.runCheck(snapshot: snapshot, at: location); await store.refresh() }
         }.disabled(!canRecord)
-        Text("추적 중인 파일과 스테이징을 검사합니다. 빌드·테스트·새 파일·서브모듈 내용은 검사하지 않습니다.")
-          .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         Button("직접 / AI 결과 기록…") { reportIdentity = model.identity; reporting = true }.disabled(!canRecord)
         if let bundle = model.bundle {
-          if bundle.verifications.isEmpty {
-            Text("아직 검증 기록이 없습니다.").font(.system(size: 12)).foregroundStyle(.secondary)
-          }
-          ForEach(Array(bundle.verifications.prefix(5))) { receipt in
-            receiptRow(receipt, requirements: bundle.context.requirementsHash)
-          }
-          if bundle.verifications.count > 5 {
-            DisclosureGroup("이전 기록 \(bundle.verifications.count - 5)개") {
-              ForEach(Array(bundle.verifications.dropFirst(5))) { receipt in
-                receiptRow(receipt, requirements: bundle.context.requirementsHash).padding(.top, 10)
+          DisclosureGroup("검사 범위 · 최근 기록 \(bundle.verifications.count)개") {
+            Text("최근 50개 중 현재 폴더를 요약합니다. 공백 검사는 추적 파일과 스테이징 대상이며 빌드·테스트·새 파일·서브모듈 내용·완료 조건·병합 가능 여부는 확인하지 않습니다.")
+              .font(.system(size: 11)).foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true).padding(.top, 6)
+            ForEach(Array(bundle.verifications.prefix(5))) { receipt in
+              receiptRow(receipt, requirements: bundle.context.requirementsHash).padding(.top, 10)
+            }
+            if bundle.verifications.count > 5 {
+              DisclosureGroup("이전 기록 \(bundle.verifications.count - 5)개") {
+                ForEach(Array(bundle.verifications.dropFirst(5))) { receipt in
+                  receiptRow(receipt, requirements: bundle.context.requirementsHash).padding(.top, 10)
+                }
               }
-            }.font(.system(size: 12))
-          }
+            }
+          }.font(.system(size: 12))
         }
       }
       Divider()
-      Button {
-        Task { handoffText = await model.handoff() }
+      Menu {
+        ForEach(TaskRequestPurpose.allCases) { purpose in
+          Button(purpose.title) { collectDraft(purpose) }
+        }
       } label: {
-        Label("인수인계 초안 만들기", systemImage: "doc.on.doc").frame(maxWidth: .infinity)
+        Label("검증 요청 · 인수인계 초안", systemImage: "doc.on.doc").frame(maxWidth: .infinity)
       }.disabled(!model.loaded || model.working || model.isDirty || store.busy)
-      Text("저장소별 현재 상태와 기록을 모아, 복사 전에 내용을 확인하고 수정합니다.")
+      Text("검증 요청과 인수인계에 쓸 자료를 미리 보고 복사합니다. AI를 실행하거나 자료를 전송하지 않습니다.")
         .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
       if let message = model.message {
         Text(message).font(.system(size: 12)).foregroundStyle(.secondary)
@@ -108,9 +131,19 @@ struct TaskContextView: View {
     .sheet(isPresented: $editing) { ContextEditor(model: model, identity: editorIdentity) }
     .sheet(isPresented: $reporting) { VerificationReportEditor(model: model, identity: reportIdentity) }
     .sheet(isPresented: Binding(get: { handoffText != nil }, set: { if !$0 { handoffText = nil } })) {
-      HandoffEditor(text: Binding(get: { handoffText ?? "" }, set: { handoffText = $0 }))
+      HandoffEditor(text: Binding(get: { handoffText ?? "" }, set: { handoffText = $0 }),
+        title: handoffPurpose.draftTitle, canCopy: { handoffIdentity == model.identity && model.loaded })
     }
-    .onChange(of: model.identity) { _, _ in editing = false; reporting = false }
+    .onChange(of: model.identity) { _, _ in
+      editing = false; reporting = false; handoffText = nil; handoffIdentity = nil
+    }
+  }
+  private func collectDraft(_ purpose: TaskRequestPurpose) {
+    let identity = model.identity
+    Task {
+      guard let text = await model.handoff(purpose: purpose), identity == model.identity else { return }
+      handoffPurpose = purpose; handoffIdentity = identity; handoffText = text
+    }
   }
   private func receiptRow(_ r: VerificationReceipt, requirements: String) -> some View {
     DisclosureGroup {
@@ -222,21 +255,25 @@ private struct VerificationReportEditor: View {
 
 private struct HandoffEditor: View {
   @Binding var text: String
+  let title: String
+  let canCopy: () -> Bool
   @Environment(\.dismiss) private var dismiss
   @State private var copied = false
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
-      Text("인수인계 초안").font(.headline)
-      Text("경로·변경 파일명·기록이 포함되어 있습니다. 전달할 내용을 확인하고 수정하세요.")
+      Text(title).font(.headline)
+      Text("생성 시점의 경로·변경 파일명·기록이 포함됩니다. 현재 상태와 다를 수 있으므로 전달할 내용을 확인하고 수정하세요.")
         .font(.caption).foregroundStyle(.secondary)
       TextEditor(text: $text).font(.system(size: 12, design: .monospaced)).frame(minHeight: 440)
-        .border(WorkbenchTheme.line).accessibilityLabel("인수인계 초안")
+        .border(WorkbenchTheme.line).accessibilityLabel(title)
       HStack {
         if copied { Text("복사했습니다.").font(.caption).foregroundStyle(.secondary) }
         Spacer()
         Button("닫기") { dismiss() }.keyboardShortcut(.cancelAction)
-        Button("초안 복사") { NSPasteboard.general.clearContents(); copied = NSPasteboard.general.setString(text, forType: .string) }
-          .keyboardShortcut(.defaultAction)
+        Button("초안 복사") {
+          guard canCopy() else { return }
+          NSPasteboard.general.clearContents(); copied = NSPasteboard.general.setString(text, forType: .string)
+        }.keyboardShortcut(.defaultAction).disabled(!canCopy())
       }
     }.padding(24).frame(width: 760, height: 650)
   }
