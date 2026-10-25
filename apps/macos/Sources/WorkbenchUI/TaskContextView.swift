@@ -123,7 +123,10 @@ struct TaskContextView: View {
           }.fixedSize(horizontal: false, vertical: true)
         }
         if let workflow = model.workflow {
-          let warnings = WorkflowEvidencePresentation.visibleWarnings(workflow)
+          let warnings = WorkflowEvidencePresentation.visibleWarnings(workflow,
+            repoID: store.selection?.repoId, opID: store.selection?.opId,
+            head: !model.loaded || store.validatingSelection || store.selectionCheckFailed ? nil : store.repository?.snapshot.head,
+            snapshot: !model.loaded || store.validatingSelection || store.selectionCheckFailed ? nil : store.repository?.snapshotHash)
           if !warnings.isEmpty {
             Text("최근 50개 안의 기록: " + warnings.joined(separator: " · "))
               .font(.system(size: 11)).foregroundStyle(WorkbenchTheme.warning)
@@ -272,15 +275,19 @@ private struct ContextEditor: View {
         VStack(alignment: .leading, spacing: 14) {
           Text("목적").font(.subheadline)
           TextField("해결할 문제와 원하는 결과", text: binding(\.purpose), axis: .vertical).lineLimit(2...4)
-          if model.supportsWorkflow {
+          if model.draftUsesWorkflow {
             WorkflowCriterionEditor(entries: criteriaBinding)
           } else { editor("완료 조건 · 한 줄에 하나씩", key: \.criteria, height: 100) }
           editor("남은 일 · 주의할 점", key: \.notes, height: 85)
           editor("참고 경로 / 링크 · 한 줄에 하나씩 (내용은 자동으로 읽지 않습니다)", key: \.references, height: 55)
-          if model.supportsWorkflow {
+          if model.draftUsesWorkflow {
             WorkflowGuideEditor(guides: guidesBinding, repositoryIDs: model.guideRepositoryIDs)
           }
         }.padding(.trailing, 8)
+      }
+      if model.draftUsesWorkflow != model.supportsWorkflow {
+        Text("연결된 엔진과 작성 형식이 다릅니다. 입력은 그대로 확인·복사할 수 있습니다. 맞는 엔진에 연결하거나 입력을 보관한 뒤 현재 저장본을 불러오세요.")
+          .font(.caption).foregroundStyle(WorkbenchTheme.warning).fixedSize(horizontal: false, vertical: true)
       }
       if let message = model.message { Text(message).font(.caption).foregroundStyle(.secondary) }
       HStack {
@@ -293,6 +300,7 @@ private struct ContextEditor: View {
         Button("닫기") { dismiss() }.keyboardShortcut(.cancelAction)
         Button("저장") { Task { guard identity == model.identity else { return }; await model.save(); if !model.isDirty { dismiss() } } }
           .keyboardShortcut(.defaultAction).disabled(!model.isDirty || !model.loaded
+            || model.draftUsesWorkflow != model.supportsWorkflow
             || (model.bundle?.workflowVersion == 2 && model.workflow?.canWrite != true))
       }
     }.padding(24).frame(width: 720, height: 660).disabled(model.working || identity != model.identity)

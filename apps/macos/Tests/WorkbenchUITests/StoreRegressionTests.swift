@@ -2602,6 +2602,54 @@ private final class WorkflowReplies: @unchecked Sendable {
   #expect(!replies.lock.withLock { replies.requests.contains { $0.method == "save_task_context" } })
 }
 
+@Test @MainActor func workflowCapabilityChangesKeepTheDraftRepresentationAndBlockIncompatibleSaves() async throws {
+  for startsRich in [true, false] {
+    let replies = WorkflowReplies(); replies.capability = startsRich
+    replies.guides = [["id": "44444444-4444-4444-8444-444444444444", "repo_id": "a",
+      "kind": "procedure", "path": "docs/saved.md", "expected_sha256": NSNull()]]
+    let server = try TestService { replies.respond($0) }
+    let model = configuredWorkflowStore(server)
+    await model.refresh()
+    if startsRich {
+      model.draft?.criteriaEntries[0].text = "Recover this unsaved rich condition"
+      model.draft?.guides[0].path = "docs/unsaved.md"
+    } else { model.draft?.criteria = "Recover this unsaved legacy condition" }
+    let preserved = model.draft
+    replies.lock.withLock { replies.capability = !startsRich }
+    await model.refresh()
+    #expect(model.supportsWorkflow == !startsRich)
+    // ContextEditor uses this draft-format selector, independently of engine capability.
+    #expect(model.draftUsesWorkflow == startsRich)
+    #expect(model.draft == preserved && model.isDirty)
+    await model.save()
+    #expect(model.draft == preserved)
+    #expect(!replies.lock.withLock { replies.requests.contains { $0.method == "save_task_context" || $0.method == "save_task_workflow" } })
+    replies.lock.withLock { replies.capability = startsRich }
+    await model.refresh()
+    #expect(model.draft == preserved && model.draftUsesWorkflow == startsRich)
+    // An explicit reload, rather than a capability change, replaces unsaved input.
+    replies.lock.withLock { replies.capability = !startsRich }
+    await model.refresh(); model.reloadDraft()
+    #expect(model.draftUsesWorkflow == !startsRich)
+    #expect(!model.isDirty)
+    #expect(model.draft?.criteria == "Duplicate\nDuplicate")
+    if !startsRich { #expect(model.draft?.guides.first?.path == "docs/saved.md") }
+  }
+}
+
+@Test @MainActor func workflowCleanDowngradeOpensTheLegacyEditorWithoutInventingUnsavedChanges() async throws {
+  let replies = WorkflowReplies()
+  let server = try TestService { replies.respond($0) }
+  let model = configuredWorkflowStore(server)
+  await model.refresh()
+  #expect(model.draftUsesWorkflow && !model.isDirty)
+  replies.lock.withLock { replies.capability = false }
+  await model.refresh()
+  #expect(!model.supportsWorkflow && !model.draftUsesWorkflow && !model.isDirty)
+  model.draft?.criteria = "New legacy edit"
+  #expect(model.isDirty)
+}
+
 @Test @MainActor func workflowStaleAndUncertainSaveRetainIdentityAndDraftWithoutReplay() async throws {
   for transportFailure in [false, true] {
     let replies = WorkflowReplies()

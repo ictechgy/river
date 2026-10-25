@@ -52,6 +52,8 @@ public final class TaskContextStore: ObservableObject {
   private var lastReadFailure: String?
   public var identity: String { token.uuidString }
   public var supportsWorkflow: Bool { bundle?.workflowVersion == 2 && workflow != nil }
+  // Draft representation survives capability changes so retained input stays inspectable.
+  var draftUsesWorkflow: Bool { draft?.workflowRevision != nil }
   public var guideRepositoryIDs: [String] {
     operation?.repos.map(\.id) ?? location.map { [$0.repoId] } ?? []
   }
@@ -120,9 +122,9 @@ public final class TaskContextStore: ObservableObject {
     if let contextOperationID { values["context_op_id"] = .string(contextOperationID) }
     return values
   }
-  private func accept(_ result: TaskContextBundle) {
+  private func accept(_ result: TaskContextBundle, preserveDraft: Bool? = nil) {
     guard result.context.revision >= (bundle?.context.revision ?? 0) else { return }
-    let dirty = isDirty || (bundle == nil && draft != nil)
+    let dirty = preserveDraft ?? (isDirty || (bundle == nil && draft != nil))
     if bundle != result { bundle = result }
     if !dirty { let saved = ContextDraft(result.context, workflow: workflow?.workflow); if draft != saved { draft = saved } }
     if !loaded { loaded = true }
@@ -151,9 +153,10 @@ public final class TaskContextStore: ObservableObject {
         guard version == token && epoch == writeEpoch else { return }
         acceptWorkflow(rich)
       } else {
+        let preserveDraft = isDirty || (bundle == nil && draft != nil)
         workflow = nil
         workflowMessage = "연결된 엔진은 조건별 근거 연결을 지원하지 않습니다. 기존 작업 정보와 기록은 사용할 수 있습니다."
-        accept(result)
+        accept(result, preserveDraft: preserveDraft)
       }
       if message == lastReadFailure && lastReadFailure != nil { message = nil }
       lastReadFailure = nil

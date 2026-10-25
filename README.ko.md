@@ -146,7 +146,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 swift test --package-path apps/macos
 ```
 
-2026-10-25 개발자 로컬 실행에서 **Swift 209개**, **Rust 141개 테스트**와 Rust 포맷·Clippy 검사를 통과했습니다. 변경하지 않은 Python 소스는 alpha.6의 **Python 56개** 테스트 검증을 유지합니다. 실제 Rust 서비스에 연결한 네이티브 합성 시나리오에서 조건 ID·이력, 보고 연결, 문서 읽기·버전 고정을 확인했습니다. 공개 GitHub·GitLab 읽기 전용 clone·fetch 결과는 변경하지 않은 원격 코드의 이전 검증입니다. CI는 아직 없으며 실제 사용자 저장소나 대형 저장소 성능을 검증한 수치도 아닙니다.
+2026-10-25 개발자 로컬 실행에서 **Swift 218개**, **Rust 141개 테스트**와 Rust 포맷·Clippy 검사를 통과했습니다. 변경하지 않은 Python 소스는 alpha.6의 **Python 56개** 테스트 검증을 유지합니다. 실제 Rust 서비스에 연결한 네이티브 합성 시나리오에서 조건 ID·이력, 보고 연결, 문서 읽기·버전 고정을 확인했습니다. 공개 GitHub·GitLab 읽기 전용 clone·fetch 결과는 변경하지 않은 원격 코드의 이전 검증입니다. CI는 아직 없으며 실제 사용자 저장소나 대형 저장소 성능을 검증한 수치도 아닙니다.
 
 - [개발 환경·검증 명령](docs/development.md)
 - [구조와 실행 경계](docs/architecture.md)

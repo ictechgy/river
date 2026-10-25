@@ -20,7 +20,7 @@ struct WorkflowCriteriaView: View {
           guard let receipt = bundle.verifications.first(where: { $0.id == evidence.receiptId }) else { return true }
           let presentation = WorkflowEvidencePresentation(receipt: receipt, evidence: evidence,
             workflow: bundle.workflow, repoID: repoID, opID: opID, head: head, snapshot: snapshot)
-          return !presentation.warnings.isEmpty || presentation.labels.contains("이 대상의 현재 코드 상태 미조회")
+          return !presentation.warnings.isEmpty || presentation.needsApplicabilityCheck
         }.count
         DisclosureGroup {
           Text("조건 ID \(criterion.id) · 버전 \(criterion.revision)")
