@@ -7,18 +7,24 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Signed River updates for macOS</description>
     <language>en</language>
     <item>
-      <title>River 0.1.0-alpha.7</title>
-      <pubDate>Sun, 25 Oct 2026 08:18:06 GMT</pubDate>
-      <sparkle:version>8</sparkle:version>
-      <sparkle:shortVersionString>0.1.0-alpha.7</sparkle:shortVersionString>
+      <title>River 0.1.0-alpha.8</title>
+      <pubDate>Sun, 25 Oct 2026 09:45:25 GMT</pubDate>
+      <sparkle:version>9</sparkle:version>
+      <sparkle:shortVersionString>0.1.0-alpha.8</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <description sparkle:format="plain-text">River 0.1.0-alpha.7 for macOS.
-This is an early alpha release. The update is Developer ID signed and is not notarized by Apple.</description>
-      <enclosure url="https://github.com/ictechgy/river/releases/download/v0.1.0-alpha.7/River-0.1.0-alpha.7-macos-arm64.dmg" length="9105427" type="application/octet-stream" sparkle:os="macos" sparkle:edSignature="SCSA5ZB8Nnop4PdMdSxxe6cJrEyJ1uNSglQGd/jb8dyud2wLi/mkT3EVbX1mjElUbwHY8JypIOffLNPic5VTAg=="></enclosure>
+      <description sparkle:format="plain-text">River 0.1.0-alpha.8
+
+Track stable completion criteria and their history. Link reports explicitly, keep claimed review state separate from recording observations, and read or pin repository verification guides.
+
+Reports and links do not certify criterion fulfillment or merge readiness. This alpha is Developer ID-signed but not notarized by Apple.
+
+Full release notes: https://github.com/ictechgy/river/releases/tag/v0.1.0-alpha.8
+</description>
+      <enclosure url="https://github.com/ictechgy/river/releases/download/v0.1.0-alpha.8/River-0.1.0-alpha.8-macos-arm64.dmg" length="9438488" type="application/octet-stream" sparkle:os="macos" sparkle:edSignature="pnoQVqopfs7Em/DCJfTHrLyd48F6fjPtb5wfnCXt8aMVFLLM82QiqWZKbimVageuQJtRi2Ctw59Jwtz3lohoBw=="></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: ZLN44MSeWMYZmyRh0l6VXjRdyVMhFob6hTroY5GKUlEz90YzEgtoIUMXOGnSDD1Luw6ElWVymrouVnrI6CUSBw==
-length: 1475
+edSignature: OTaK4PU6J7S9qrU4o48MUYkMhG+ISGwdaahcix0yacmhwdaUTeO/KwYDqQVJ/tXUBl7+op299A6WcdkO3zczCA==
+length: 1779
 -->
