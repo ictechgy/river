@@ -4,7 +4,7 @@ use crate::{
     check_deadline, deadline, git, git_bytes, git_command, git_path, no_conflicts,
     no_external_filters, process, snapshot,
 };
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
@@ -151,6 +151,26 @@ fn stage_file_with_hooks(
     before_conversion: impl FnOnce() -> Result<()>,
     before_publish: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
+    stage_file_with_seams(
+        path,
+        file,
+        staged,
+        expected,
+        || Ok(()),
+        before_conversion,
+        before_publish,
+    )
+}
+
+fn stage_file_with_seams(
+    path: &Path,
+    file: &str,
+    staged: bool,
+    expected: &str,
+    before_metadata: impl FnOnce() -> Result<()>,
+    before_conversion: impl FnOnce() -> Result<()>,
+    before_publish: impl FnOnce() -> Result<()>,
+) -> Result<()> {
     safe_relative(file)?;
     ensure!(!file.contains('\0'), "unsafe_relative_path");
     no_external_filters(path)?;
@@ -160,12 +180,26 @@ fn stage_file_with_hooks(
     let mut transaction = IndexTransaction::new(path)?;
     let reviewed = snapshot(path)?;
     ensure!(digest(&reviewed)? == expected, "stale_snapshot");
-    ensure_status_member(path, file, staged)?;
+    before_metadata()?;
     let index_entries = git_bytes(path, &["ls-files", "--stage", "-z"])?;
     let current = index_entry(&index_entries, file)?;
     let head = head_entry(path, &reviewed, file)?;
+    ensure!(
+        current.is_some() || head.is_some() || reviewed.files.contains_key(file),
+        "invalid_file_stage_path"
+    );
     for entry in [current.as_ref(), head.as_ref()].into_iter().flatten() {
         ensure!(entry.mode != "160000", "unsupported_submodule_or_directory");
+    }
+    // Cached raw diff reads index/HEAD metadata only. Its ITA-invisible view
+    // distinguishes an intent marker from a genuinely staged empty addition.
+    let intent_to_add =
+        current.is_some() && head.is_none() && !has_staged_metadata_change(path, file)?;
+    if staged {
+        ensure!(
+            current != head && !intent_to_add,
+            "file_not_changed_on_requested_side"
+        );
     }
 
     // Capture and bind the source before creating any staged blob. A file that
@@ -173,8 +207,10 @@ fn stage_file_with_hooks(
     let replacement = if staged {
         head.map(Replacement::Existing)
             .unwrap_or(Replacement::Remove)
-    } else {
+    } else if reviewed.files.contains_key(file) {
         capture(path, file, &reviewed, current.as_ref())?
+    } else {
+        Replacement::Remove
     };
     let conversion = if matches!(&replacement, Replacement::Captured { symlink: false, .. }) {
         Some(crate::file_conversion::Conversion::capture(
@@ -193,6 +229,7 @@ fn stage_file_with_hooks(
 
     deadline::write_budget(|| {
         transaction.prepare(path)?;
+        let mut captured_blob = None;
         let entry = match replacement {
             Replacement::Existing(entry) => Some(entry),
             Replacement::Remove => None,
@@ -216,7 +253,7 @@ fn stage_file_with_hooks(
                 let oid = candidate_command(
                     path,
                     transaction.candidate.path(),
-                    &["hash-object", "-w", "--no-filters", "--stdin"],
+                    &["hash-object", "--no-filters", "--stdin"],
                     Some(&bytes),
                 )?;
                 let oid = String::from_utf8(oid)?.trim().to_string();
@@ -224,10 +261,30 @@ fn stage_file_with_hooks(
                     matches!(oid.len(), 40 | 64) && oid.bytes().all(|c| c.is_ascii_hexdigit()),
                     "invalid_blob_oid"
                 );
+                captured_blob = Some(bytes);
                 Some(Entry { mode, oid })
             }
         };
-        if let Some(entry) = entry {
+        if !staged {
+            ensure!(
+                intent_to_add || entry != current,
+                "file_not_changed_on_requested_side"
+            );
+        }
+        if let Some(bytes) = captured_blob {
+            let written = candidate_command(
+                path,
+                transaction.candidate.path(),
+                &["hash-object", "-w", "--no-filters", "--stdin"],
+                Some(&bytes),
+            )?;
+            ensure!(
+                Some(std::str::from_utf8(&written)?.trim())
+                    == entry.as_ref().map(|entry| entry.oid.as_str()),
+                "invalid_blob_oid"
+            );
+        }
+        if let Some(entry) = &entry {
             let record = format!("{} {}\t{}\0", entry.mode, entry.oid, file);
             candidate_command(
                 path,
@@ -265,40 +322,39 @@ fn stage_file_with_hooks(
     })
 }
 
-fn ensure_status_member(path: &Path, file: &str, staged: bool) -> Result<()> {
-    // No rename expansion: a tracked rename is represented as independently
-    // selectable deletion/addition entries, so neither path stages its sibling.
-    let status = git_bytes(
+fn has_staged_metadata_change(path: &Path, file: &str) -> Result<bool> {
+    let raw = git_bytes(
         path,
         &[
-            "-c",
-            "status.renames=false",
-            "status",
-            "--porcelain=v1",
+            "diff",
+            "--cached",
+            "--raw",
             "-z",
-            "--untracked-files=all",
+            "--no-abbrev",
+            "--no-renames",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--ignore-submodules=none",
+            "--ita-invisible-in-index",
+            "--",
+            file,
         ],
     )?;
-    let mut found = false;
-    for row in status.split(|b| *b == 0).filter(|row| !row.is_empty()) {
-        ensure!(row.len() >= 4, "invalid_status");
-        if &row[3..] == file.as_bytes() {
-            found = true;
-            let changed = if staged {
-                row[0] != b' ' && row[0] != b'?'
-            } else {
-                row[1] != b' '
-            };
-            if changed {
-                return Ok(());
-            }
-        }
+    if raw.is_empty() {
+        return Ok(false);
     }
-    ensure!(!found, "file_not_changed_on_requested_side");
-    bail!("invalid_file_stage_path")
+    let fields: Vec<_> = raw.split(|byte| *byte == 0).collect();
+    ensure!(
+        fields.len() == 3
+            && fields[0].starts_with(b":")
+            && fields[1] == file.as_bytes()
+            && fields[2].is_empty(),
+        "invalid_index_entry"
+    );
+    Ok(true)
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 struct Entry {
     mode: String,
     oid: String,
@@ -344,10 +400,9 @@ fn head_entry(path: &Path, reviewed: &Snapshot, file: &str) -> Result<Option<Ent
         "invalid_file_stage_path"
     );
     let fields: Vec<_> = std::str::from_utf8(&row[..tab])?.split(' ').collect();
-    ensure!(
-        fields.len() == 3 && fields[1] == "blob",
-        "unsupported_submodule_or_directory"
-    );
+    ensure!(fields.len() == 3, "invalid_tree_entry");
+    ensure!(fields[1] != "tree", "invalid_file_stage_path");
+    ensure!(fields[1] == "blob", "unsupported_submodule_or_directory");
     Ok(Some(Entry {
         mode: fields[0].into(),
         oid: fields[2].into(),
@@ -687,7 +742,7 @@ mod tests {
         let original = fs::read(path.join(".git/index")).unwrap();
         let reviewed = digest(&snapshot(path).unwrap()).unwrap();
         let error = stage_file_with_hook(path, "selected", false, &reviewed, || {
-            bail!("injected_failure")
+            anyhow::bail!("injected_failure")
         })
         .unwrap_err();
         assert_eq!(error.to_string(), "injected_failure");
@@ -809,5 +864,112 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.to_string(), "stale_snapshot");
         assert_eq!(fs::read(path.join(".git/index")).unwrap(), original);
+    }
+
+    #[test]
+    fn late_sibling_clean_or_process_driver_at_metadata_seam_never_executes_or_publishes() {
+        for driver in ["clean", "process"] {
+            let temp = fixture();
+            let path = temp.path();
+            fs::write(path.join("sibling"), "sibling baseline\n").unwrap();
+            git(path, &["add", "--", "sibling"]).unwrap();
+            git(path, &["commit", "-m", "sibling baseline"]).unwrap();
+            fs::write(path.join("sibling"), "unselected sibling edit\n").unwrap();
+            fs::write(path.join(".gitattributes"), "sibling filter=late\n").unwrap();
+            let original = fs::read(path.join(".git/index")).unwrap();
+            let reviewed = digest(&snapshot(path).unwrap()).unwrap();
+            let error = stage_file_with_seams(
+                path,
+                "selected",
+                false,
+                &reviewed,
+                || {
+                    git(
+                        path,
+                        &[
+                            "config",
+                            &format!("filter.late.{driver}"),
+                            "touch sibling-driver-must-not-run; cat",
+                        ],
+                    )?;
+                    Ok(())
+                },
+                || Ok(()),
+                || Ok(()),
+            )
+            .unwrap_err();
+            assert_eq!(error.to_string(), "unsupported_external_filter");
+            assert!(!path.join("sibling-driver-must-not-run").exists());
+            assert_eq!(fs::read(path.join(".git/index")).unwrap(), original);
+            assert_eq!(fs::read(path.join("selected")).unwrap(), b"reviewed\n");
+            assert_eq!(
+                fs::read(path.join("sibling")).unwrap(),
+                b"unselected sibling edit\n"
+            );
+            assert!(!path.join(".git/index.lock").exists());
+        }
+    }
+
+    #[test]
+    fn selected_file_transaction_never_spawns_a_source_worktree_conversion_command() {
+        use std::{cell::RefCell, rc::Rc};
+        for driver in ["clean", "process"] {
+            let temp = fixture();
+            let path = temp.path();
+            fs::write(path.join("sibling"), "sibling baseline\n").unwrap();
+            git(path, &["add", "--", "sibling"]).unwrap();
+            git(path, &["commit", "-m", "sibling baseline"]).unwrap();
+            fs::write(path.join("sibling"), "unselected sibling edit\n").unwrap();
+            fs::write(path.join(".gitattributes"), "sibling filter=late\n").unwrap();
+            let reviewed = digest(&snapshot(path).unwrap()).unwrap();
+            let root = path.to_path_buf();
+            let observed = Rc::new(RefCell::new(Vec::new()));
+            let commands = observed.clone();
+            let result = crate::process::observe_commands(
+                move |command| {
+                    if command.get_current_dir() != Some(root.as_path()) {
+                        return;
+                    }
+                    let args: Vec<_> = command
+                        .get_args()
+                        .map(|arg| arg.to_string_lossy().into_owned())
+                        .collect();
+                    let has = |value: &str| args.iter().any(|arg| arg == value);
+                    let converts = has("status")
+                        || has("add")
+                        || has("checkout")
+                        || has("reset")
+                        || (has("diff") && !has("--cached"))
+                        || (has("hash-object") && !has("--no-filters"));
+                    if converts {
+                        // Runs immediately before spawn, after the command filter
+                        // probe. The former status call would execute this newly
+                        // installed driver while refreshing an unrelated sibling.
+                        let config = root.join(".git/config");
+                        let mut bytes = fs::read(&config).unwrap();
+                        bytes.extend_from_slice(format!("\n[filter \"late\"]\n\t{driver} = touch source-conversion-must-not-run; cat\n").as_bytes());
+                        fs::write(config, bytes).unwrap();
+                        commands.borrow_mut().push(args);
+                    }
+                },
+                || stage_file(path, "selected", false, &reviewed),
+            );
+            assert!(result.is_ok(), "{result:?}");
+            assert!(
+                observed.borrow().is_empty(),
+                "source converter spawned: {:?}",
+                observed.borrow()
+            );
+            assert!(!path.join("source-conversion-must-not-run").exists());
+            assert_eq!(git(path, &["show", ":selected"]).unwrap(), "reviewed\n");
+            assert_eq!(
+                git(path, &["show", ":sibling"]).unwrap(),
+                "sibling baseline\n"
+            );
+            assert_eq!(
+                fs::read(path.join("sibling")).unwrap(),
+                b"unselected sibling edit\n"
+            );
+        }
     }
 }

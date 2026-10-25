@@ -409,6 +409,11 @@ public final class WorkbenchStore: ObservableObject {
       return "연결된 작업 엔진은 파일 전체 스테이징을 지원하지 않습니다. 엔진을 업데이트한 뒤 다시 연결하세요."
     }
     if selectedFileChange == nil { return "현재 목록에서 스테이징할 파일을 선택하세요." }
+    if diffError != nil { return "변경 표시를 읽지 못했습니다. 새로고침한 뒤 파일 전체를 확인하고 스테이징하세요." }
+    if diffRequest != nil || diff?.path != selectedFile || diff?.staged != staged
+      || diff?.snapshotHash != repository?.snapshotHash {
+      return "선택한 파일의 최신 변경을 불러오고 있습니다. 변경 표시가 갱신된 뒤 스테이징하세요."
+    }
     return nil
   }
   public var taskInformationUnavailable: Bool {

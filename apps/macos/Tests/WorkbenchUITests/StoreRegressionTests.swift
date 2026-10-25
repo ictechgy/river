@@ -2797,6 +2797,8 @@ private final class FileStagingReplies: @unchecked Sendable {
   var snapshot = "file-code"
   var statusFails = false
   var holdWrite = false
+  var holdDiff = false
+  var diffFails = false
   var failure = ""
   var stageRequests: [[String: Any]] = []
   var statusCalls = 0
@@ -2857,17 +2859,68 @@ private final class FileStagingReplies: @unchecked Sendable {
       }
     }
     if method == "get_diff" {
-      return lock.withLock {
+      let response: ([String: Any], Bool) = lock.withLock {
+        if diffFails {
+          return (["schema_version": 1, "error": ["code": "git_failed", "message": "synthetic diff failure"]], holdDiff)
+        }
         let path = params["path"] as? String ?? ""
         let isNew = path == "new.swift"
         let hunks = isNew ? [] : ["@@ -1 +1 @@\n-a\n+b\n"]
-        return ["schema_version": 1, "result": ["snapshot_hash": snapshot, "path": path,
+        return (["schema_version": 1, "result": ["snapshot_hash": snapshot, "path": path,
           "staged": params["staged"] as? Bool ?? false, "header": isNew ? "" : "header\n",
-          "hunks": hunks, "text": isNew ? "" : "header\n" + hunks.joined(), "can_stage_hunks": !isNew]]
+          "hunks": hunks, "text": isNew ? "" : "header\n" + hunks.joined(), "can_stage_hunks": !isNew]], holdDiff)
       }
+      if response.1 { arrived.value = true; _ = gate.wait(timeout: .now() + .seconds(5)) }
+      return response.0
     }
     return base.respond(request)
   }
+}
+
+@Test @MainActor func selectedFileStagingWaitsForTheDisplayedSnapshotDuringRefresh() async throws {
+  let replies = FileStagingReplies(); let server = try TestService { replies.respond($0) }
+  let store = WorkbenchStore(socketPath: server.path); await store.connect()
+  #expect(store.canStageSelectedFile)
+  let oldSnapshot = try #require(store.diff?.snapshotHash)
+  replies.lock.withLock { replies.snapshot = "newer-file-code"; replies.holdDiff = true }
+  let refreshing = Task { await store.refresh() }
+  try await wait(replies.arrived)
+  #expect(store.repository?.snapshotHash == "newer-file-code")
+  #expect(store.diff?.snapshotHash == oldSnapshot)
+  #expect(!store.canStageSelectedFile)
+  await store.stageSelectedFile()
+  #expect(replies.lock.withLock { replies.stageRequests.isEmpty })
+  replies.lock.withLock { replies.holdDiff = false }; replies.gate.signal()
+  await refreshing.value
+  #expect(store.diff?.snapshotHash == "newer-file-code")
+  #expect(store.canStageSelectedFile)
+  await store.stageSelectedFile()
+  #expect(replies.lock.withLock { replies.stageRequests.count } == 1)
+  #expect(replies.lock.withLock { replies.stageRequests.first?["snapshot_hash"] as? String } == "newer-file-code")
+}
+
+@Test @MainActor func selectedFileStagingRequiresACurrentPreviewAfterFailureAndCancellation() async throws {
+  let replies = FileStagingReplies(); let server = try TestService { replies.respond($0) }
+  let store = WorkbenchStore(socketPath: server.path); await store.connect()
+  replies.lock.withLock { replies.snapshot = "failed-file-code"; replies.diffFails = true }
+  await store.refresh()
+  #expect(store.diff == nil && store.diffError != nil)
+  #expect(!store.canStageSelectedFile)
+  await store.stageSelectedFile()
+  #expect(replies.lock.withLock { replies.stageRequests.isEmpty })
+  replies.lock.withLock { replies.diffFails = false; replies.holdDiff = true }
+  let refreshing = Task { await store.refresh(forceDiff: true) }
+  try await wait(replies.arrived)
+  store.chooseFile("new.swift") // Cancels the held old-path request and clears its rendered identity.
+  #expect(!store.canStageSelectedFile)
+  await store.stageSelectedFile()
+  #expect(replies.lock.withLock { replies.stageRequests.isEmpty })
+  replies.lock.withLock { replies.holdDiff = false }; replies.gate.signal()
+  await refreshing.value
+  await store.refresh(forceDiff: true)
+  #expect(store.diff?.path == "new.swift" && store.diff?.snapshotHash == "failed-file-code")
+  #expect(store.diff?.hunks.isEmpty == true)
+  #expect(store.canStageSelectedFile)
 }
 
 @Test(arguments: [nil, 0, 2] as [Int?]) @MainActor

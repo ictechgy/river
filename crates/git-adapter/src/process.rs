@@ -12,6 +12,27 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(test)]
+type CommandObserver = Box<dyn FnMut(&Command)>;
+#[cfg(test)]
+thread_local! { static COMMAND_OBSERVER: std::cell::RefCell<Option<CommandObserver>> = const { std::cell::RefCell::new(None) }; }
+#[cfg(test)]
+pub(super) fn observe_commands<T>(
+    observer: impl FnMut(&Command) + 'static,
+    work: impl FnOnce() -> T,
+) -> T {
+    struct Restore(Option<CommandObserver>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            COMMAND_OBSERVER.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+    let _restore = Restore(COMMAND_OBSERVER.with(|slot| slot.replace(Some(Box::new(observer)))));
+    work()
+}
+
 pub(super) fn run(
     mut command: Command,
     input: Option<&[u8]>,
@@ -19,6 +40,12 @@ pub(super) fn run(
     limit: usize,
 ) -> Result<Output> {
     let timeout = crate::deadline::budget(timeout)?;
+    #[cfg(test)]
+    COMMAND_OBSERVER.with(|slot| {
+        if let Some(observer) = slot.borrow_mut().as_mut() {
+            observer(&command);
+        }
+    });
     command
         .stdin(if input.is_some() {
             Stdio::piped()

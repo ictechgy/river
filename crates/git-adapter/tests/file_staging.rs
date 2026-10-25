@@ -381,3 +381,60 @@ fn regular_file_modes_match_git_add_when_filemode_is_disabled_or_only_group_exec
         );
     }
 }
+
+#[test]
+fn metadata_membership_distinguishes_intent_to_add_requested_sides_and_exact_files() {
+    for unborn in [false, true] {
+        let f = Fixture::new(unborn);
+        for (name, bytes) in [
+            ("ita-empty", b"".as_slice()),
+            ("ita-text", b"pending\n".as_slice()),
+        ] {
+            fs::write(f.path().join(name), bytes).unwrap();
+            git::git(f.path(), &["add", "-N", "--", name]).unwrap();
+            let before = fs::read(f.path().join(".git/index")).unwrap();
+            let expected = digest(&git::snapshot(f.path()).unwrap()).unwrap();
+            assert_eq!(
+                git::stage_file(f.path(), name, true, &expected)
+                    .unwrap_err()
+                    .to_string(),
+                "file_not_changed_on_requested_side"
+            );
+            assert_eq!(fs::read(f.path().join(".git/index")).unwrap(), before);
+            f.stage(name, false);
+            assert_eq!(f.index(name), bytes);
+            let staged_index = fs::read(f.path().join(".git/index")).unwrap();
+            let expected = digest(&git::snapshot(f.path()).unwrap()).unwrap();
+            assert_eq!(
+                git::stage_file(f.path(), name, false, &expected)
+                    .unwrap_err()
+                    .to_string(),
+                "file_not_changed_on_requested_side"
+            );
+            assert_eq!(fs::read(f.path().join(".git/index")).unwrap(), staged_index);
+            f.stage(name, true);
+            f.absent(name);
+            assert_eq!(fs::read(f.path().join(name)).unwrap(), bytes);
+        }
+    }
+    let f = Fixture::new(false);
+    fs::write(f.path().join(".gitattributes"), "selected text eol=lf\n").unwrap();
+    fs::write(f.path().join("selected"), b"selected baseline\r\n").unwrap();
+    let expected = digest(&git::snapshot(f.path()).unwrap()).unwrap();
+    let before = fs::read(f.path().join(".git/index")).unwrap();
+    for staged in [false, true] {
+        assert_eq!(
+            git::stage_file(f.path(), "selected", staged, &expected)
+                .unwrap_err()
+                .to_string(),
+            "file_not_changed_on_requested_side"
+        );
+        assert_eq!(
+            git::stage_file(f.path(), "missing", staged, &expected)
+                .unwrap_err()
+                .to_string(),
+            "invalid_file_stage_path"
+        );
+        assert_eq!(fs::read(f.path().join(".git/index")).unwrap(), before);
+    }
+}
