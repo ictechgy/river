@@ -98,6 +98,7 @@ public struct RepositoryStatus: Decodable, Sendable, Equatable {
   public let worktrees: String
   public let conflict: Bool
   public let gitVersion: String
+  public let fileStagingVersion: Int?
 }
 public struct FileDiff: Decodable, Sendable {
   public let snapshotHash: String

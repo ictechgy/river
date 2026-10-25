@@ -4,6 +4,7 @@ import WorkbenchProtocol
 struct DiffWorkspace: View {
   @ObservedObject var store: WorkbenchStore
   @ObservedObject var presentation: DiffPresentationModel
+  var openTaskInformation: (() -> Void)? = nil
   @State private var previousReading: PresentedReading?
   @State private var request: HunkRequest?
   var body: some View {
@@ -19,7 +20,7 @@ struct DiffWorkspace: View {
           DiffLines.displayText(store.selectedFile.isEmpty ? "파일 선택" : store.selectedFile))
         Text(
           store.isViewingStash
-            ? "\(store.selectedStash?.selector ?? "Stash") · 읽기 전용" : store.staged ? "스테이징" : "변경"
+            ? "\(store.selectedStash?.selector ?? "Stash") · 읽기 전용" : store.staged ? "커밋에 포함" : "스테이징 전"
         )
         .font(.system(size: 12)).foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
@@ -30,6 +31,10 @@ struct DiffWorkspace: View {
         }.labelsHidden().pickerStyle(.segmented).frame(width: 134).font(.system(size: 12))
       }.padding(.horizontal, 14).frame(minHeight: 40).background(WorkbenchTheme.canvas)
       Divider()
+      if !store.selectedFile.isEmpty && !store.isViewingStash {
+        fileStagingToolbar
+        Divider()
+      }
       if store.taskPreparationIncomplete && !store.pendingWorktree && !store.isViewingStash {
         Label(store.preparationHint, systemImage: "exclamationmark.triangle")
           .font(.system(size: 12)).foregroundStyle(WorkbenchTheme.warning)
@@ -87,6 +92,13 @@ struct DiffWorkspace: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
       } else if let diff = store.diff, !diff.hunks.isEmpty {
         let renderedLocation = store.selection
+        if !store.isViewingStash && !diff.canStageHunks {
+          Text("이 파일 형식이나 변경 종류는 부분 스테이징을 지원하지 않습니다. 파일 전체 변경을 확인한 뒤 위의 버튼을 사용하세요.")
+            .font(.system(size: 12)).foregroundStyle(WorkbenchTheme.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 14).padding(.vertical, 8)
+          Divider()
+        }
         if !store.isViewingStash { readingToolbar(diff) }
         let changed = store.changedReadingHunks
         GeometryReader { geometry in
@@ -138,23 +150,35 @@ struct DiffWorkspace: View {
           }
         }
       } else if store.selectedFile.isEmpty {
-        ContentUnavailableView(
-          store.isViewingStash ? "Stash의 파일을 선택하세요" : "검토할 변경이 없습니다",
-          systemImage: store.isViewingStash ? "archivebox" : "checkmark.circle",
-          description: Text(
+        ContentUnavailableView {
+          Label(
+            store.isViewingStash ? "Stash의 파일을 선택하세요" : store.staged ? "커밋에 포함한 파일이 없습니다" : "검토할 변경이 없습니다",
+            systemImage: store.isViewingStash ? "archivebox" : "checkmark.circle")
+        } description: {
+          Text(
             store.isViewingStash
               ? (store.stashError ?? "왼쪽 파일 목록에서 저장된 변경을 확인하세요.")
               : store.staged
-                ? "왼쪽 ‘변경’에서 파일을 검토한 뒤 원하는 변경을 스테이징하세요." : "파일이 변경되면 왼쪽 목록에서 선택해 검토할 수 있습니다.")
-        )
+                ? "1. ‘스테이징 전’에서 파일 선택 → 2. Diff에서 스테이징 → 3. 커밋 메시지 작성 후 커밋"
+                : "작업 목적과 완료 조건을 기록한 뒤 코드를 바꾸세요. 변경이 생기면 파일 선택 → 스테이징 → 커밋 순서로 진행합니다.")
+        } actions: {
+          if !store.isViewingStash, let openTaskInformation {
+            Button("작업 정보에서 목적·완료 조건 작성", systemImage: "text.alignleft", action: openTaskInformation)
+              .buttonStyle(.bordered).accessibilityIdentifier("workbench.empty-diff-task-information")
+          }
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
       } else if let diff = store.diff {
         ContentUnavailableView(
-          "표시할 텍스트 변경이 없습니다", systemImage: "doc.text.magnifyingglass",
+          store.selectedFileChange?.index == "?" && !store.isViewingStash
+            ? "아직 Git에 추가하지 않은 새 파일입니다" : "일반 텍스트 Diff를 표시할 수 없습니다",
+          systemImage: "doc.text.magnifyingglass",
           description: Text(
             store.isViewingStash
               ? "표시할 텍스트 변경이 없습니다. 파일 종류나 실행 권한 변경을 확인하세요."
-              : "기존 텍스트 파일의 변경을 검토할 수 있습니다. 새 파일·바이너리·실행 권한 변경은 Git에서 확인해 주세요.")
+              : store.selectedFileChange?.index == "?"
+                ? "이 파일의 일반 텍스트 Diff를 표시하지 못했습니다. 파일 내용을 확인한 뒤 ‘파일 전체 스테이징’으로 커밋에 포함하세요."
+                : "바이너리·파일 종류·실행 권한 등은 Git에서 확인하세요. 확인한 파일은 위의 파일 전체 버튼으로 스테이징하거나 취소할 수 있습니다.")
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(alignment: .bottomLeading) {
@@ -193,6 +217,31 @@ struct DiffWorkspace: View {
           }
         }.padding(20).frame(width: 700, height: 520)
       }
+  }
+
+  private var fileStagingToolbar: some View {
+    let path = store.selectedFile
+    let staged = store.staged
+    let snapshot = store.repository?.snapshotHash
+    let location = store.selection
+    return HStack(alignment: .top, spacing: 10) {
+      Button(staged ? "파일 전체 스테이징 취소" : "파일 전체 스테이징") {
+        if let snapshot, let location {
+          Task { await store.stageFile(path, staged: staged, expectedSnapshot: snapshot, at: location) }
+        }
+      }.buttonStyle(.bordered).tint(WorkbenchTheme.accentText).controlSize(.regular)
+        .font(.system(size: 12)).fixedSize()
+        .disabled(!store.canStageSelectedFile)
+        .accessibilityIdentifier("workbench.stage-file")
+        .accessibilityLabel("\(DiffLines.displayText(path)) 파일 전체 \(staged ? "스테이징 취소" : "스테이징")")
+        .help(staged ? "이 파일만 커밋 대상에서 제외합니다. 작업 폴더 내용은 유지됩니다."
+          : "선택한 파일의 모든 변경만 스테이징합니다. 다른 파일은 추가하지 않습니다.")
+      Text(store.fileStagingUnavailableReason
+        ?? (staged ? "이 파일을 커밋 대상에서 제외합니다. 작업 폴더 내용은 유지됩니다." : "이 파일의 모든 변경을 커밋에 포함합니다."))
+        .font(.system(size: 12)).foregroundStyle(WorkbenchTheme.secondaryText)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 4)
+    }.padding(.horizontal, 14).padding(.vertical, 8).background(WorkbenchTheme.canvas)
   }
 
   @ViewBuilder private func readingToolbar(_ diff: FileDiff) -> some View {
@@ -300,7 +349,7 @@ private struct HunkView: View {
           }.font(.system(size: 12)).menuStyle(.borderlessButton).fixedSize()
             .disabled(!canRequest).help(
               "이 변경을 담은 AI용 요청문을 만들어 직접 복사합니다. 자동 전송·실행하지 않습니다. · 128 KiB 이내")
-          Button(staged ? "스테이징 취소" : "스테이징", action: stage)
+          Button(staged ? "이 변경만 스테이징 취소" : "이 변경만 스테이징", action: stage)
             .buttonStyle(.bordered).tint(WorkbenchTheme.accentText).controlSize(.regular).font(
               .system(size: 12)
             ).disabled(!canStage)

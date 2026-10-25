@@ -24,11 +24,13 @@
 - Reduce simultaneous visual elements: start with files and Diff, open supporting panels when needed, and keep exceptional states visible.
 - **Non-goals:** Automatic AI execution, automatic merge/deployment, broad history rewriting, or a web-based desktop shell. See the [supported scope](README.md#current-limitations).
 - **Success signals:** Users can identify the current repository and folder, resume a review after switching locations, find Stash/branches, and recover from a failed operation without confusing it with success. These are design goals, not completed usability-study findings.
+- **First-use correction:** A real-project trial exposed that list filters were mistaken for staging actions and the intent/AI/evidence flow was not discoverable. Provide explicit selected-file staging/unstaging, retain optional hunk actions, and explain the next action in the existing files/Diff/task surfaces. Do not add a mandatory setup wizard or a permanent process dashboard.
 
 ## Personas and jobs
 
 - **Primary users:** Developers working across local repositories, including developers collaborating with coding agents.
-- **Jobs:** Read changes, stage selected text hunks, write deliberate commits, prepare related branches/worktrees, inspect branch history and Stash, and record task intent and evidence.
+- **Jobs:** Read changes, stage selected files or text hunks, write deliberate commits, prepare related branches/worktrees, inspect branch history and Stash, and record task intent and evidence.
+- **Guided task use:** An existing checkout can hold task intent without first creating another branch/worktree. Explain purpose/criteria → copy editable context to the user's AI tool → inspect actual results and record evidence → review/stage/commit. Describe these as user actions, never automatic AI-DLC phase completion or integration approval.
 - **Context:** Desktop and keyboard use, familiar Git GUI conventions, multiple working directories, and occasional preparation or connection failures.
 
 ## Information architecture
@@ -75,7 +77,9 @@
 - Pane title rows provide drag, placement, and hide controls. Normal body content should not repeat the pane title. Required context, filters, counts, and read-only state may remain in body toolbars.
 - Personalization uses one named screen-configuration entry point with progressively disclosed layout, panel, and reading controls. Use accurate miniatures of real dock trees instead of indistinguishable preset symbols. Keep all panels accessible from a native View menu and preserve named access to Stash and branches.
 - Reuse theme tokens and shared `ChromeButtonStyle`/`PrimaryActionStyle`. Hunk staging is a quiet outlined action; its availability and warning semantics remain unchanged.
-- Keep the commit target and staged count in the action. Show hook/signing behavior nearby and explicitly warn that untracked files are excluded.
+- **Staging discovery:** Name the source lists `스테이징 전` and `커밋에 포함` (or equally explicit Git terms) and distinguish their filters from real write buttons. Offer visible selected-file actions including new files when the connected engine advertises support. File staging affects only the selected file; partial staging remains separately labeled. Explain capability, conflict, stale/read-only and unsupported-file blockers near the action. Git snapshots and service authorization remain authoritative; never substitute a shell command from the UI.
+- **AI guidance:** Put the existing editable context/request-copy action before result recording in Task information, with one short numbered explanation of how to use an external AI tool. Keep advanced report provenance inside a named disclosure and keep unknown/incomplete/tool-error status visible. A clean Diff offers a direct route to writing task intent. Keep the existing handoff and verification request types and make handoff include its intended instruction, with collected source material quoted separately.
+- Keep the commit target and staged count in the action. Show hook/signing behavior nearby and explain that new files must be explicitly staged before inclusion.
 - **Ownership:** `WorkbenchUI` owns native views/tokens and presentation state; `WorkbenchProtocol` owns typed wire models; `WorkbenchRuntime` owns engine startup and local registration. Rust owns Git operations and authorization.
 
 ## Accessibility

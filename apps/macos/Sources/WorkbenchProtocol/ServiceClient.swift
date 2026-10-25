@@ -59,7 +59,7 @@ public actor ServiceClient {
     let request = try JSONEncoder().encode(ServiceRequest(method: method, params: params))
     let path = socketPath
     let timeout = ["configure_remote", "fetch_remote", "pull_remote", "push_remote"].contains(method)
-      ? remoteTimeoutSeconds : (["stage_hunk", "commit"].contains(method) ? mutationTimeoutSeconds : timeoutSeconds)
+      ? remoteTimeoutSeconds : (["stage_file", "stage_hunk", "commit"].contains(method) ? mutationTimeoutSeconds : timeoutSeconds)
     let cancellation = SocketCancellation()
     let response: Data = try await withTaskCancellationHandler {
       try await withCheckedThrowingContinuation { continuation in

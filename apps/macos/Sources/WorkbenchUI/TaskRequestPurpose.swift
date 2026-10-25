@@ -7,7 +7,7 @@ public enum TaskRequestPurpose: String, CaseIterable, Identifiable, Sendable {
   public var id: String { rawValue }
   var title: String {
     switch self {
-    case .handoff: "인수인계"
+    case .handoff: "작업 맥락 / AI 요청"
     case .verify: "검증 요청"
     }
   }
@@ -15,14 +15,13 @@ public enum TaskRequestPurpose: String, CaseIterable, Identifiable, Sendable {
   private var instruction: String {
     switch self {
     case .handoff:
-      "이어받을 작업의 목적, 완료 조건, 현재 변경, 남은 검증과 막힌 이유를 먼저 확인하세요. 이전 기록을 새로운 코드의 승인으로 사용하지 마세요."
+      "아래 작업의 목적과 완료 조건을 기준으로 작업을 이어받으세요. 현재 코드와 변경을 먼저 확인하고, 필요한 변경과 확인 방법을 정한 뒤 작업하세요. 목적이나 조건이 비어 있거나 모호하면 먼저 질문하세요. 기존 변경을 보존하고, 실제로 확인한 결과와 남은 일·막힌 이유를 돌려주세요. 이전 기록을 새로운 코드의 승인으로 사용하지 마세요."
     case .verify:
       "완료 조건마다 실제로 관찰할 동작과 확인 방법을 정하세요. 프로젝트의 검증 지침이나 기능 지도가 있다면 먼저 읽고, 실행 준비 → 환경 확인 → 실제 기능 사용 → 증거 수집 → 만든 자원 정리 순서로 검증하세요. 지침이 없으면 안전한 실행 방법부터 코드에서 확인하세요. 빌드 성공이나 Git 공백 검사만으로 실제 기능이 동작한다고 판단하지 마세요."
     }
   }
 
   func draft(observations: String) -> String {
-    guard self != .handoff else { return observations }
     return """
     # \(title)
 

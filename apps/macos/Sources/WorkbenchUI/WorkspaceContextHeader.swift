@@ -52,9 +52,9 @@ struct WorkspaceContextHeader: View {
         Button {
           layout.showPane(.details)
         } label: {
-          Text("작업 정보")
+          Text("작업·AI 안내")
         }.buttonStyle(ChromeButtonStyle(active: layout.isPanePresented(.details)))
-          .help("작업 정보 패널 열기 · 작업 목적 · 완료 조건 · 검증 기록 · 인수인계")
+          .help("작업 정보 패널 열기 · 목적 작성 → AI 요청 복사 → 결과 확인 → 스테이징·커밋")
           .accessibilityValue(layout.isPanePresented(.details) ? "표시 중" : "열기")
         Button {
           layout.showPane(.graph)

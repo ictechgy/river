@@ -393,6 +393,24 @@ public final class WorkbenchStore: ObservableObject {
   public var isViewingStash: Bool { selectedStashOID != nil }
   public var selectedStash: GitStash? { stashes.first { $0.oid == selectedStashOID } }
   public var stagedCount: Int { repository?.files.filter(\.isStaged).count ?? 0 }
+  public var selectedFileChange: FileChange? { visibleFiles.first { $0.path == selectedFile } }
+  public var canStageSelectedFile: Bool { fileStagingUnavailableReason == nil }
+  public var fileStagingUnavailableReason: String? {
+    if isViewingStash { return "Stash는 읽기 전용입니다." }
+    if selectionCheckFailed { return "최신 상태를 확인하지 못했습니다. 새로고침한 뒤 스테이징하세요." }
+    if taskPreparationIncomplete { return preparationHint }
+    if repository == nil || validatingSelection { return "현재 폴더의 파일 상태를 확인하고 있습니다." }
+    if repository?.conflict == true { return "충돌 또는 진행 중인 Git 작업을 해결한 뒤 스테이징하세요." }
+    if hasRunningOperation { return "저장소 준비가 끝나면 스테이징할 수 있습니다." }
+    if contextWorking { return "검사나 작업 기록 수집이 끝나면 스테이징할 수 있습니다." }
+    if busy || remoteBusy { return "현재 작업이 끝나면 스테이징할 수 있습니다." }
+    if !canEdit { return "작업공간 연결을 확인한 뒤 스테이징할 수 있습니다." }
+    if repository?.fileStagingVersion != 1 {
+      return "연결된 작업 엔진은 파일 전체 스테이징을 지원하지 않습니다. 엔진을 업데이트한 뒤 다시 연결하세요."
+    }
+    if selectedFileChange == nil { return "현재 목록에서 스테이징할 파일을 선택하세요." }
+    return nil
+  }
   public var taskInformationUnavailable: Bool {
     guard let id = selection?.opId else { return false }
     return unresolvedOperationIDs.contains(id) || taskRepository == nil
@@ -792,7 +810,13 @@ public final class WorkbenchStore: ObservableObject {
               if selectedFile != fallback { selectedFile = fallback }
             }
             if forceDiff { clearDiffFailure() }
-            if !selectedFile.isEmpty && (forceDiff || changed || diff?.path != selectedFile || diff?.staged != staged) { await loadDiff() }
+            if selectedFile.isEmpty {
+              clearDiffFailure()
+              cancelDiffRead()
+              diff = nil
+            } else if forceDiff || changed || diff?.path != selectedFile || diff?.staged != staged {
+              await loadDiff()
+            }
           }
         }
         if isViewingStash {
@@ -974,6 +998,27 @@ public final class WorkbenchStore: ObservableObject {
   public func stageHunk(_ index: Int) async {
     guard let selection, let diff else { return }
     await stageHunk(index, from: diff, at: selection)
+  }
+  public func stageSelectedFile() async {
+    guard let selection, let repository else { return }
+    await stageFile(selectedFile, staged: staged, expectedSnapshot: repository.snapshotHash, at: selection)
+  }
+  public func stageFile(_ path: String, staged: Bool, expectedSnapshot: String, at location: WorktreeSelection) async {
+    guard let client, location == selection, canStageSelectedFile,
+      path == selectedFile, staged == self.staged, expectedSnapshot == repository?.snapshotHash
+    else {
+      error = fileStagingUnavailableReason
+        ?? "선택한 파일이나 변경 상태가 바뀌었습니다. 현재 파일을 다시 확인한 뒤 스테이징하세요."
+      errorDetails = nil
+      return
+    }
+    var values = params(for: location)
+    values["path"] = .string(path)
+    values["staged"] = .bool(staged)
+    values["snapshot_hash"] = .string(expectedSnapshot)
+    await mutation("stage_file", action: "파일 전체 \(staged ? "스테이징 취소" : "스테이징") · \(path)") {
+      let _: MutationResult = try await client.call("stage_file", params: values)
+    }
   }
   public func stageHunk(_ index: Int, from diff: FileDiff, at selection: WorktreeSelection) async {
     guard let client, selection == self.selection, canEdit, canUseRenderedDiff,

@@ -9,6 +9,8 @@ struct TaskInspector: View {
   var showsHistorySummary = true
   var section: InspectorSection = .all
   var openHistory: (() -> Void)?
+  var openFiles: (() -> Void)?
+  var openCommit: (() -> Void)?
   @State private var showTechnicalDetails = false
   @State private var showGraph = false
   @State private var showStashInfo = false
@@ -57,7 +59,8 @@ struct TaskInspector: View {
             Divider()
           }
           if section == .all || section == .details {
-            TaskContextView(store: store, model: store.taskContext).padding(18)
+            TaskContextView(store: store, model: store.taskContext,
+              openFiles: openFiles, openCommit: openCommit).padding(18)
             Divider()
             DisclosureGroup("위치 · 준비 세부정보", isExpanded: $showTechnicalDetails) {
               VStack(alignment: .leading, spacing: 14) {

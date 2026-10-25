@@ -233,7 +233,8 @@ private struct DockNodeView: View {
   @ViewBuilder private func paneContent(_ pane: WorkbenchPane) -> some View {
     switch pane {
     case .files: WorkspaceSidebar(store: store)
-    case .diff: DiffWorkspace(store: store, presentation: diffPresentation)
+    case .diff: DiffWorkspace(store: store, presentation: diffPresentation,
+      openTaskInformation: { layout.showPane(.details) })
     case .graph: CommitHistory(store: store, expanded: .constant(true), allowsCollapse: false)
     case .commit:
       TaskInspector(
@@ -246,7 +247,8 @@ private struct DockNodeView: View {
     case .details:
       TaskInspector(
         store: store, historyExpanded: .constant(false), showsHistorySummary: false,
-        section: .details, openHistory: { layout.showPane(.graph) })
+        section: .details, openHistory: { layout.showPane(.graph) },
+        openFiles: { layout.showPane(.files) }, openCommit: { layout.showPane(.commit) })
     case .branches: BranchesView(store: store, model: branches) { layout.hidePane(.branches) }
     }
   }

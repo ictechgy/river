@@ -21,7 +21,7 @@ The service returns the most recent **50 receipts across the task context**, not
 
 ## Record what was reported and what was observed
 
-Choose **직접 / AI 결과 기록…** and select the current criteria the report addresses. Leaving all criteria unchecked creates an explicitly unlinked report. Saving captures the selected criterion IDs, versions and text together under the current context and workflow revisions; a stale revision or unknown ID is rejected.
+Choose **3. 실제 확인 후 결과 · 근거 기록…** and select the current criteria the report addresses. Leaving all criteria unchecked creates an explicitly unlinked report. Saving captures the selected criterion IDs, versions and text together under the current context and workflow revisions; a stale revision or unknown ID is rejected.
 
 Record these separately:
 
@@ -29,6 +29,8 @@ Record these separately:
 - **Claimed reviewed state:** the full HEAD and/or River change-state hash the author explicitly says they reviewed. Leave unknown values empty. River does not fill these from the current folder or the recording-time observation.
 - **Provenance and evidence references:** provider, exact model/version when known, and literal artifact paths or links. River does not read, fetch, upload or authenticate those references.
 - **Report completion status:** completed, incomplete, tool error, or unknown. A “passed” result with an incomplete, failed-tool or unknown report status does not establish that the review completed.
+
+The result narrative and evidence references come first in the report editor. Optional provider/model and claimed code identity are inside **보고 출처 · 검토한 코드 상태 (선택)**; report completion status and warnings stay outside that disclosure.
 
 Receipt details also retain the app's repository/folder, HEAD and change-state observation at recording time. That observation identifies where the record was made; it does not certify which code the reporter examined. A claimed state matching the current state remains an unobserved author report. HEAD alone does not describe uncommitted working-folder changes. Missing or partial claims, report errors and failures stay visible in the compact warnings and report labels.
 
@@ -58,7 +60,7 @@ Up to **30 active criteria**, **10 ordinary references**, **10 guide references*
 
 ## Carry the context forward
 
-Use **검증 요청 · 인수인계 초안** to preview and edit a handoff or verification request before copying. The draft includes active criterion IDs and versions, bounded recent report bindings, claimed review state separately from recording-time observations, report metadata, and guide repository/path/pinned-hash references. Each repository's current state is collected independently; unavailable or unprepared folders remain unqueried.
+Open **작업·AI 안내**, then use **2. AI 요청 미리보기 · 복사** to choose **작업 맥락 / AI 요청** or **검증 요청**. Preview and edit the draft before copying. The draft includes active criterion IDs and versions, bounded recent report bindings, claimed review state separately from recording-time observations, report metadata, and guide repository/path/pinned-hash references. Each repository's current state is collected independently; unavailable or unprepared folders remain unqueried.
 
 The generated draft includes up to the most recent **5 returned receipts per target**, drawn from the context-wide latest 50. It does not include guide contents or fetch artifact references. Copying remains explicit; River does not contact a provider. Check the destination, current code and any changed context before passing the draft on. Scope changes dismiss editors and read previews rather than applying their results to another target.
 

@@ -5,6 +5,8 @@ import WorkbenchProtocol
 struct TaskContextView: View {
   @ObservedObject var store: WorkbenchStore
   @ObservedObject var model: TaskContextStore
+  var openFiles: (() -> Void)? = nil
+  var openCommit: (() -> Void)? = nil
   @State private var editing = false
   @State private var reporting = false
   @State private var editorIdentity = ""
@@ -13,20 +15,18 @@ struct TaskContextView: View {
   @State private var handoffIdentity: String?
   @State private var handoffPurpose: TaskRequestPurpose = .handoff
   @State private var confirmingWorkflowReset = false
-  private var canRecord: Bool {
-    model.loaded && !model.working && !model.isDirty && !store.busy
-      && !store.validatingSelection && store.repository != nil && !store.hasRunningOperation
-      && (model.bundle?.workflowVersion != 2 || model.workflow?.canWrite == true)
+  private var availability: TaskGuidanceAvailability {
+    TaskGuidanceAvailability(loaded: model.loaded, working: model.working, dirty: model.isDirty,
+      workspaceBusy: store.busy, validatingSelection: store.validatingSelection,
+      repositoryAvailable: store.repository != nil, runningOperation: store.hasRunningOperation,
+      workflowWritable: model.bundle?.workflowVersion != 2 || model.workflow?.canWrite == true)
   }
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      HStack {
-        Label("작업 목적", systemImage: "scope").font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(WorkbenchTheme.accentText).accessibilityAddTraits(.isHeader)
-        Spacer()
-        Button(model.isDirty ? "이어서 작성" : "작성 · 수정") { editorIdentity = model.identity; editing = true }
-          .disabled(!model.loaded || model.working)
-      }
+      taskGuidance
+      Divider()
+      Label("작업 목적", systemImage: "scope").font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(WorkbenchTheme.accentText).accessibilityAddTraits(.isHeader)
       Text(store.contextOperation == nil ? "이 저장소에 저장됩니다." : "이 작업의 저장소들이 함께 사용하는 기록입니다.")
         .font(.system(size: 11)).foregroundStyle(.secondary)
       if let c = model.bundle?.context {
@@ -91,10 +91,6 @@ struct TaskContextView: View {
           .fixedSize(horizontal: false, vertical: true)
       }
       WorkflowGuidesView(model: model, selectedRepoID: store.selection?.repoId)
-      if model.isDirty {
-        Text("저장하지 않은 작성 내용이 있습니다. 검증·인수인계 전에 저장해 주세요.")
-          .font(.system(size: 11)).foregroundStyle(WorkbenchTheme.warning)
-      }
       Divider()
       VStack(alignment: .leading, spacing: 10) {
         HStack {
@@ -136,8 +132,7 @@ struct TaskContextView: View {
         Button("공백 · 충돌 마커 검사", systemImage: "play.circle") {
           guard let snapshot = store.repository?.snapshotHash, let location = store.selection else { return }
           Task { await model.runCheck(snapshot: snapshot, at: location); await store.refresh() }
-        }.disabled(!canRecord)
-        Button("직접 / AI 결과 기록…") { reportIdentity = model.identity; reporting = true }.disabled(!canRecord)
+        }.disabled(!availability.canRecordReport)
         if let bundle = model.bundle {
           DisclosureGroup("검사 범위 · 최근 기록 \(bundle.verifications.count)개") {
             Text("최근 50개 중 현재 폴더를 요약합니다. 공백 검사는 추적 파일과 스테이징 대상이며 빌드·테스트·새 파일·서브모듈 내용·완료 조건·병합 가능 여부는 확인하지 않습니다.")
@@ -156,16 +151,6 @@ struct TaskContextView: View {
           }.font(.system(size: 12))
         }
       }
-      Divider()
-      Menu {
-        ForEach(TaskRequestPurpose.allCases) { purpose in
-          Button(purpose.title) { collectDraft(purpose) }
-        }
-      } label: {
-        Label("검증 요청 · 인수인계 초안", systemImage: "doc.on.doc").frame(maxWidth: .infinity)
-      }.disabled(!model.loaded || model.working || model.isDirty || store.busy)
-      Text("검증 요청과 인수인계에 쓸 자료를 미리 보고 복사합니다. AI를 실행하거나 자료를 전송하지 않습니다.")
-        .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
       if let message = model.message {
         Text(message).font(.system(size: 12)).foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
@@ -189,6 +174,46 @@ struct TaskContextView: View {
     .onChange(of: model.identity) { _, _ in
       editing = false; reporting = false; handoffText = nil; handoffIdentity = nil; confirmingWorkflowReset = false
     }
+  }
+  private var taskGuidance: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      Text("작업 맥락 / AI 요청").font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(WorkbenchTheme.accentText).accessibilityAddTraits(.isHeader)
+      Text("현재 폴더에서 시작하세요. 새 브랜치나 작업용 폴더는 선택 사항입니다.")
+        .font(.system(size: 12)).foregroundStyle(.secondary)
+      HStack(alignment: .firstTextBaseline) {
+        Text("1. 목적 · 완료 조건")
+        Spacer(minLength: 4)
+        Button(model.isDirty ? "이어서 작성" : "작성 · 수정") {
+          editorIdentity = model.identity; editing = true
+        }.disabled(!availability.canEditContext)
+      }
+      Menu {
+        ForEach(TaskRequestPurpose.allCases) { purpose in
+          Button(purpose.title) { collectDraft(purpose) }
+        }
+      } label: {
+        Label("2. AI 요청 미리보기 · 복사", systemImage: "doc.on.doc")
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }.disabled(!availability.canCopyRequest)
+      Text("초안을 수정·복사해 사용 중인 AI 도구에 붙여넣으세요. River는 AI를 실행하거나 자료를 전송하지 않습니다.")
+        .font(.system(size: 11)).foregroundStyle(.secondary)
+      Button("3. 실제 확인 후 결과 · 근거 기록…") {
+        reportIdentity = model.identity; reporting = true
+      }.disabled(!availability.canRecordReport)
+      if openFiles != nil || openCommit != nil {
+        VStack(alignment: .leading, spacing: 6) {
+          Text("4. 변경 검토")
+          HStack(spacing: 8) {
+            if let openFiles { Button("파일 · 스테이징", action: openFiles) }
+            if let openCommit { Button("커밋", action: openCommit) }
+          }
+        }
+      }
+      if let blocker = availability.requestBlocker {
+        Text(blocker).font(.system(size: 11)).foregroundStyle(WorkbenchTheme.warning)
+      }
+    }.font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
   }
   private func collectDraft(_ purpose: TaskRequestPurpose) {
     let identity = model.identity
@@ -331,26 +356,42 @@ private struct VerificationReportEditor: View {
   @State private var artifacts = ""
   @State private var reportStatus = "unknown"
   private var claimedState: WorkflowClaimedState? {
-    let head = claimedHead.trimmingCharacters(in: .whitespacesAndNewlines)
-    let snapshot = claimedSnapshot.trimmingCharacters(in: .whitespacesAndNewlines)
-    return head.isEmpty && snapshot.isEmpty ? nil : WorkflowClaimedState(
-      head: head.isEmpty ? nil : head, snapshotHash: snapshot.isEmpty ? nil : snapshot)
+    TaskReportInput.claimedState(head: claimedHead, snapshot: claimedSnapshot)
   }
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       Text("검증 결과 기록").font(.headline)
       ScrollView {
         VStack(alignment: .leading, spacing: 14) {
+          Text("실제 결과 · 근거 · 남은 확인").font(.subheadline)
+          Text("직접 확인한 동작, 실패, 실행하지 못한 확인을 적으세요. AI 답변을 기록할 때도 실제 결과와 제안을 구분하세요.")
+            .font(.caption).foregroundStyle(.secondary)
+          TextEditor(text: $note).font(.system(size: 13)).frame(height: 130).border(WorkbenchTheme.line)
+            .accessibilityLabel("실제 결과 · 근거 · 남은 확인")
+          TextField("확인 항목 / 실행했다고 보고한 명령 (선택 · 여기서는 실행되지 않음)", text: $command)
+          Picker("보고된 결과", selection: $verdict) {
+            Text("확인 필요").tag("unknown"); Text("통과").tag("passed"); Text("실패").tag("failed")
+          }
+          if model.supportsWorkflow {
+            Text("근거 파일 / 링크 · 한 줄에 하나씩 (내용은 읽거나 전송하지 않습니다)").font(.subheadline)
+            TextEditor(text: $artifacts).font(.system(size: 12)).frame(height: 65).border(WorkbenchTheme.line)
+              .accessibilityLabel("근거 파일 / 링크")
+            Picker("보고 완료 상태", selection: $reportStatus) {
+              Text("확인하지 못함").tag("unknown")
+              Text("완료했다고 보고").tag("completed")
+              Text("미완료").tag("incomplete")
+              Text("도구 오류").tag("tool_error")
+            }
+            if let warning = TaskReportInput.completionWarning(reportStatus) {
+              Text(warning).font(.caption).foregroundStyle(WorkbenchTheme.warning)
+            }
+          }
           Picker("출처", selection: $kind) {
             Text("직접 적은 결과").tag("human_report")
             Text("AI가 보고한 결과").tag("ai_report")
           }.pickerStyle(.segmented)
-          Text("앱이 실행을 관찰한 검증과 구분해 저장합니다. 아래 명령은 실행되지 않습니다.")
+          Text("보고자의 기록으로 저장합니다. River가 실행을 관찰한 검증이나 조건 충족·승인이 아닙니다.")
             .font(.caption).foregroundStyle(.secondary)
-          TextField("검증 항목 / 실행했다고 보고한 명령 (선택)", text: $command)
-          Picker("보고된 결과", selection: $verdict) {
-            Text("확인 필요").tag("unknown"); Text("통과").tag("passed"); Text("실패").tag("failed")
-          }
           if let workflow = model.workflow, model.supportsWorkflow {
             VStack(alignment: .leading, spacing: 8) {
               Text("연결할 완료 조건").font(.subheadline)
@@ -362,36 +403,20 @@ private struct VerificationReportEditor: View {
               Text(criterionIDs.isEmpty ? "조건을 선택하지 않으면 연결하지 않은 보고로 남습니다." : "선택한 조건의 현재 버전과 연결합니다. 조건 충족이나 승인을 뜻하지 않습니다.")
                 .font(.caption).foregroundStyle(.secondary)
             }
-            Divider()
-            VStack(alignment: .leading, spacing: 8) {
-              Text("보고자가 실제 검토했다고 명시한 코드 상태").font(.subheadline)
-              Text("앱의 기록 시점 상태와 별도로 보관합니다. 알 수 없는 값은 비워 두세요. 현재 상태를 대신 채우지 않습니다.")
-                .font(.caption).foregroundStyle(.secondary)
-              TextField("검토했다고 보고한 전체 HEAD (선택)", text: $claimedHead)
-                .font(.system(size: 12, design: .monospaced))
-              TextField("검토했다고 보고한 변경 상태 해시 (선택)", text: $claimedSnapshot)
-                .font(.system(size: 12, design: .monospaced))
-              HStack {
-                TextField("제공자 (예: Claude, 직접 검토)", text: $provider)
-                TextField("정확한 모델 / 버전 (선택)", text: $providerModel)
-              }
-              Picker("보고 완료 상태", selection: $reportStatus) {
-                Text("확인하지 못함").tag("unknown")
-                Text("완료했다고 보고").tag("completed")
-                Text("미완료").tag("incomplete")
-                Text("도구 오류").tag("tool_error")
-              }
-              Text("미완료·도구 오류·미확인은 통과 결과가 적혀 있어도 검토 완료 근거로 취급하지 않습니다.")
-                .font(.caption).foregroundStyle(.secondary)
-            }
-          }
-          Text("결과와 근거").font(.subheadline)
-          TextEditor(text: $note).font(.system(size: 13)).frame(height: 130).border(WorkbenchTheme.line)
-            .accessibilityLabel("결과와 근거")
-          if model.supportsWorkflow {
-            Text("근거 파일 / 링크 · 한 줄에 하나씩 (내용은 읽거나 전송하지 않습니다)").font(.subheadline)
-            TextEditor(text: $artifacts).font(.system(size: 12)).frame(height: 65).border(WorkbenchTheme.line)
-              .accessibilityLabel("근거 파일 / 링크")
+            DisclosureGroup("보고 출처 · 검토한 코드 상태 (선택)") {
+              VStack(alignment: .leading, spacing: 8) {
+                Text("보고자가 실제 검토했다고 명시한 값만 적으세요. 앱의 기록 시점 상태와 별도로 보관하며, 알 수 없는 값은 비워 둡니다.")
+                  .font(.caption).foregroundStyle(.secondary)
+                TextField("검토했다고 보고한 전체 HEAD (선택)", text: $claimedHead)
+                  .font(.system(size: 12, design: .monospaced))
+                TextField("검토했다고 보고한 변경 상태 해시 (선택)", text: $claimedSnapshot)
+                  .font(.system(size: 12, design: .monospaced))
+                HStack {
+                  TextField("제공자 (예: Claude, 직접 검토)", text: $provider)
+                  TextField("정확한 모델 / 버전 (선택)", text: $providerModel)
+                }
+              }.padding(.top, 8)
+            }.font(.subheadline)
           }
         }.padding(.trailing, 8)
       }
@@ -408,7 +433,7 @@ private struct VerificationReportEditor: View {
           }
         }.keyboardShortcut(.defaultAction).disabled(note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
       }
-    }.padding(24).frame(width: 720, height: model.supportsWorkflow ? 660 : 490)
+    }.padding(24).frame(width: 720, height: 660)
       .disabled(model.working || identity != model.identity)
   }
 }
@@ -424,6 +449,8 @@ private struct HandoffEditor: View {
       Text(title).font(.headline)
       Text("생성 시점의 경로·변경 파일명·기록이 포함됩니다. 현재 상태와 다를 수 있으므로 전달할 내용을 확인하고 수정하세요.")
         .font(.caption).foregroundStyle(.secondary)
+      Text("복사한 초안을 사용 중인 AI 도구에 붙여넣고, 작업 후 River에서 변경을 검토하고 실제 결과·근거를 기록하세요.")
+        .font(.caption).foregroundStyle(.secondary)
       TextEditor(text: $text).font(.system(size: 12, design: .monospaced)).frame(minHeight: 440)
         .border(WorkbenchTheme.line).accessibilityLabel(title)
       HStack {
@@ -435,6 +462,6 @@ private struct HandoffEditor: View {
           NSPasteboard.general.clearContents(); copied = NSPasteboard.general.setString(text, forType: .string)
         }.keyboardShortcut(.defaultAction).disabled(!canCopy())
       }
-    }.padding(24).frame(width: 760, height: 650)
+    }.padding(24).frame(width: 760, height: 660)
   }
 }

@@ -55,12 +55,12 @@ struct CommitComposer: View {
         Text(reason).font(.system(size: 12)).foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true).lineSpacing(2)
       }
-      Text("Git hook·커밋 서명 없이 커밋합니다.")
+      Text("‘커밋에 포함’ 목록의 스테이징된 내용만 커밋합니다. Git hook·커밋 서명 없이 커밋합니다.")
         .font(.system(size: 12)).foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
       if !store.isViewingStash {
         if let count = store.repository?.files.filter({ $0.index == "?" }).count, count > 0 {
-          Text("새 파일 \(count)개는 이 커밋에 포함되지 않습니다. Git에서 내용을 확인하고 추가해 주세요.")
+          Text("아직 Git에 추가하지 않은 새 파일 \(count)개는 이 커밋에 포함되지 않습니다. ‘스테이징 전’에서 파일을 선택해 파일 전체를 스테이징하세요.")
             .font(.system(size: 12)).foregroundStyle(WorkbenchTheme.warning)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -77,7 +77,7 @@ struct CommitComposer: View {
     if store.busy { return "현재 작업이 끝나면 커밋할 수 있습니다." }
     if store.validatingSelection || store.repository == nil { return "현재 폴더의 변경을 확인하고 있습니다." }
     if !store.canEdit { return "작업공간 연결을 확인한 뒤 커밋할 수 있습니다." }
-    if store.stagedCount == 0 { return "검토한 변경을 스테이징하면 커밋할 수 있습니다." }
+    if store.stagedCount == 0 { return "‘스테이징 전’에서 파일을 선택해 스테이징하면 커밋할 수 있습니다." }
     if draft.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "커밋 메시지를 입력하세요." }
     return nil
   }

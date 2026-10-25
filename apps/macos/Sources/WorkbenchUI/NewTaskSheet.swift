@@ -17,9 +17,9 @@ struct NewTaskSheet: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 18) {
-      Text(plan == nil ? "새 작업 준비" : "실행 계획 확인").font(.title2.weight(.semibold))
+      Text(plan == nil ? "새 작업용 브랜치·폴더 준비" : "실행 계획 확인").font(.title2.weight(.semibold))
       Text(
-        plan == nil ? "그룹의 브랜치 규칙과 등록된 준비 스크립트를 사용합니다." : "기준 커밋, 작업 폴더와 준비 스크립트가 이 작업에 고정됩니다."
+        plan == nil ? "별도 작업 공간이 필요할 때 사용합니다. 기존 폴더에서 바로 작업하려면 이 창을 닫고 ‘작업·AI 안내’에서 목적을 작성하세요." : "기준 커밋, 작업 폴더와 준비 스크립트가 이 작업에 고정됩니다."
       )
       .font(.system(size: 12)).foregroundStyle(.secondary)
       if store.recoveryTaskID != nil {

@@ -51,14 +51,15 @@ printf '{"method":"execute_plan","params":{"plan_id":"%s","idempotency_key":"log
 - `list_branches`: `repo_id`, 선택적으로 `op_id`. `get_branch_history`는 `repo_id`, `branch_ref`(목록의 `full_ref`), `tip_oid`로 대상을 고정합니다.
 - `list_stashes`: `repo_id`. `get_stash`: `repo_id`, `stash_oid`. `get_stash_diff`: `repo_id`, `stash_oid`, `path`. 저장소 공통 Stash를 OID로 고정해 읽습니다.
 - `stage_hunk`: `repo_id`, `path`, `hunk_index`, `snapshot_hash`, `diff_hash`, 선택적으로 `staged`(기본 `false`)와 `op_id`. `diff_hash`는 현재 `get_diff` 응답의 `text`를 UTF-8로 인코딩한 bytes의 SHA-256입니다. 응답 기준을 그대로 사용하며 임의 patch를 받지 않습니다.
+- `stage_file`: `repo_id`, `path`, `snapshot_hash`, 선택적으로 `staged`(기본 `false`)와 `op_id`. `false`는 선택한 파일 전체를 포함하고, `true`는 해당 파일 전체를 index에서 HEAD 상태로 돌립니다. 작업 파일·HEAD는 바꾸지 않습니다. HEAD에 없던 추가 파일은 index에서만 제거하며 초기 커밋 전에도 취소할 수 있습니다. 일반 파일 전체 스테이징에는 Apple Git 2.42 이상이 필요합니다. 새 엔진의 `get_repo_status.file_staging_version: 1`을 확인한 뒤 사용합니다. 전체 파일 목록을 받는 API가 아닙니다.
 - `commit`: `repo_id`, `snapshot_hash`, `message`, 선택적으로 `op_id`. Task 쓰기 전 Ready 상태와 Git 대상을 다시 확인합니다. `snapshot_hash`는 같은 대상의 최신 `get_repo_status` 응답에서 얻습니다.
 - `events`: `cursor`(기본 0) 뒤의 이벤트를 읽습니다. `latest: true`는 초기 화면용 최근 tail 조회입니다.
 
-`stage_hunk`·`commit`은 서비스 안에서 다른 쓰기가 진행 중이면 `repository_busy`로 즉시 거부합니다.
+`stage_file`·`stage_hunk`·`commit`은 서비스 안에서 다른 쓰기가 진행 중이면 `repository_busy`로 즉시 거부합니다.
 
-선택적인 `op_id`·`context_op_id`는 생략하거나 `null`로 지정할 수 있습니다. 지정한 ID는 공백만으로 이루어지지 않은 문자열이어야 하며, 다른 자료형이나 빈 ID는 `invalid_parameter`로 거부합니다. `get_diff`·`stage_hunk`의 `staged`는 생략하면 `false`이며, 지정할 때는 JSON boolean이어야 합니다(`null`도 거부).
+선택적인 `op_id`·`context_op_id`는 생략하거나 `null`로 지정할 수 있습니다. 지정한 ID는 공백만으로 이루어지지 않은 문자열이어야 하며, 다른 자료형이나 빈 ID는 `invalid_parameter`로 거부합니다. `get_diff`·`stage_file`·`stage_hunk`의 `staged`는 생략하면 `false`이며, 지정할 때는 JSON boolean이어야 합니다(`null`도 거부).
 
-`stage_hunk`·`commit`과 Task context 요청은 정의되지 않은 필드를 거부합니다. 예를 들어 `op_id`를 `opid`로 잘못 입력한 쓰기 요청이 원본 저장소에 적용되지 않습니다.
+`stage_file`·`stage_hunk`·`commit`과 Task context 요청은 정의되지 않은 필드를 거부합니다. 예를 들어 `op_id`를 `opid`로 잘못 입력한 쓰기 요청이 원본 저장소에 적용되지 않습니다.
 
 CLI는 성공 시 0, 명령 실패 시 1(오류 JSON은 stderr)로 끝납니다. `rpc`가 서비스 오류 응답을 받으면 2입니다. Unix 소켓은 짧은 사용자 소유 전용 경로에 두세요. 앱은 이 경로를 자동으로 관리합니다.
 

@@ -30,6 +30,8 @@ def main():
     parser.add_argument("--verify-preparation-readiness", action="store_true", help="verify unfinished task is read-only and original/Ready sibling remain editable")
     parser.add_argument("--verify-review-continuity", action="store_true", help="verify mounted diff scrolling, reading checkpoint, external edits and selected-hunk handoff")
     parser.add_argument("--verify-task-context", action="store_true", help="verify saved purpose, observed/reported evidence, stale context and multi-repo handoff")
+    parser.add_argument("--verify-file-staging", action="store_true", help="verify real selected-file new-file stage/unstage without changing HEAD or working bytes")
+    parser.add_argument("--file-staging-view", choices=["working", "staged"], default="working", help="final synthetic new-file side after --verify-file-staging")
     parser.add_argument("--layout", choices=["focus", "balanced", "classic", "review", "tracks"], default="focus")
     parser.add_argument("--graph", choices=["top", "bottom", "hidden"])
     parser.add_argument("--verify-layout", action="store_true", help="verify persistence and unchanged live Git review across layout changes")
@@ -42,6 +44,8 @@ def main():
     parser.add_argument("--dock-scene", choices=["default", "free", "tabs", "drag-preview", "branches", "empty"], default="default")
     parser.add_argument("--verify-docking", action="store_true", help="exercise the real dock drag controller using mounted pane geometry")
     args = parser.parse_args()
+    if args.verify_file_staging and args.scene in {"clean", "waiting"}:
+        parser.error("--verify-file-staging requires a changed synthetic working folder")
     if args.verify_personalization and (args.layout_settings or (args.branches and args.dock_scene != "branches") or args.scene in {"clean", "waiting"} or args.stash_detail):
         parser.error("--verify-personalization requires the mounted current-changes workspace (not settings, standalone branches, clean/waiting, or stash detail)")
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -145,6 +149,8 @@ def main():
         environment["WORKBENCH_PREVIEW_VERIFY_READINESS"] = "1" if args.verify_preparation_readiness else "0"
         environment["WORKBENCH_PREVIEW_VERIFY_REVIEW"] = "1" if args.verify_review_continuity else "0"
         environment["WORKBENCH_PREVIEW_VERIFY_CONTEXT"] = "1" if args.verify_task_context else "0"
+        environment["WORKBENCH_PREVIEW_VERIFY_FILE_STAGING"] = "1" if args.verify_file_staging else "0"
+        environment["WORKBENCH_PREVIEW_FILE_STAGING_VIEW"] = args.file_staging_view
         environment["WORKBENCH_PREVIEW_LAYOUT"] = args.layout
         environment["WORKBENCH_PREVIEW_GRAPH"] = args.graph or ""
         environment["WORKBENCH_PREVIEW_VERIFY_LAYOUT"] = "1" if args.verify_layout else "0"
@@ -162,6 +168,8 @@ def main():
         if args.inspector != "auto":
             environment["WORKBENCH_PREVIEW_INSPECTOR"] = "1" if args.inspector == "show" else "0"
         subprocess.run([str(renderer), str(socket), str(args.output.resolve()), args.appearance, str(args.width), str(args.height)], check=True, timeout=60 if args.verify_personalization else 30, env=environment)
+        if args.scene != "waiting":
+            files = rpc("get_repo_status", repo_id="ios-app", op_id=op["id"])["files"]
         stashes = rpc("list_stashes", repo_id="ios-app")
         report = {"image": str(args.output.resolve()), "fixture": str(fixture), "scene": args.scene, "file_count": len(files), "staged_count": sum(f["index"] not in [" ", "?"] for f in files), "stash_count": len(stashes), "stash_detail": args.stash_detail, "status": op["status"], "repos": [{"id": r["plan"]["repo_id"], "state": r["state"], "attempts": r["attempts"]} for r in op["repos"]]}
         report.update(original_folder=args.original, switch_cache_verified=args.verify_switch_cache, branch_browser=args.branches and args.dock_scene != "branches", review_continuity_verified=args.verify_review_continuity)
@@ -169,6 +177,7 @@ def main():
         report.update(dock_scene=args.dock_scene, docking_verified=args.verify_docking)
         report.update(preparation_readiness_verified=args.verify_preparation_readiness)
         report.update(task_context_verified=args.verify_task_context)
+        report.update(file_staging_verified=args.verify_file_staging, file_staging_view=args.file_staging_view if args.verify_file_staging else None)
         report.update(focus_pane=args.focus_pane, code_size=args.code_size, compact=args.compact,
                       layout_settings_section=args.layout_settings_section,
                       personalization_verified=args.verify_personalization)

@@ -11,13 +11,18 @@ struct WorkspaceSidebar: View {
           Button("현재 변경으로 돌아가기", systemImage: "arrow.uturn.backward") { store.showWorkingChanges() }
             .font(.system(size: 12)).buttonStyle(.link)
         } else {
+          Picker(
+            "파일 목록 필터", selection: Binding(get: { store.staged }, set: { store.chooseStaged($0) })
+          ) {
+            Text("스테이징 전 \(store.repository?.files.filter(\.isWorking).count ?? 0)").tag(false)
+            Text("커밋에 포함 \(store.stagedCount)").tag(true)
+          }.pickerStyle(.segmented).labelsHidden().font(.system(size: 12))
+            .help("목록만 전환합니다. 파일을 선택한 뒤 Diff 위의 파일 전체 스테이징 버튼을 사용하세요.")
           HStack(spacing: 6) {
-            Picker(
-              "변경 파일 영역", selection: Binding(get: { store.staged }, set: { store.chooseStaged($0) })
-            ) {
-              Text("변경 \(store.repository?.files.filter(\.isWorking).count ?? 0)").tag(false)
-              Text("스테이징 \(store.stagedCount)").tag(true)
-            }.pickerStyle(.segmented).labelsHidden().font(.system(size: 12))
+            Text("목록 전환 · 스테이징은 Diff에서")
+              .font(.system(size: 12)).foregroundStyle(WorkbenchTheme.secondaryText)
+              .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
             Menu {
               Toggle("미검토·다시 검토가 필요한 파일만", isOn: $store.onlyUnreviewedFiles)
             } label: {
@@ -68,7 +73,7 @@ struct WorkspaceSidebar: View {
     if store.pendingWorktree { return store.pendingWorktreeHint }
     if store.selectionCheckFailed { return "파일 목록을 확인하지 못했습니다. 새로고침으로 다시 확인해 주세요." }
     if store.repository == nil { return "파일 목록을 불러오는 중…" }
-    return store.staged ? "스테이징한 파일이 없습니다." : "작업 폴더에 변경이 없습니다."
+    return store.staged ? "커밋에 포함할 파일이 없습니다. ‘스테이징 전’에서 파일을 선택해 스테이징하세요." : "작업 폴더에 변경이 없습니다."
   }
   private func fileRow(_ file: FileChange) -> some View {
     let selected = file.path == store.selectedFile
@@ -115,6 +120,6 @@ struct WorkspaceSidebar: View {
       }
       .accessibilityAddTraits(selected ? .isSelected : [])
       .help(file.path).accessibilityLabel(
-        "\(file.path), \(store.isViewingStash ? "stash의 변경" : store.staged ? "스테이징됨" : "변경됨"), \(store.isViewingStash ? "읽기 전용" : store.reviewState(for: file).label)")
+        "\(file.path), \(store.isViewingStash ? "stash의 변경" : store.staged ? "커밋에 포함" : file.index == "?" ? "아직 Git에 추가하지 않은 새 파일" : "스테이징 전"), \(store.isViewingStash ? "읽기 전용" : store.reviewState(for: file).label)")
   }
 }

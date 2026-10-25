@@ -2787,3 +2787,202 @@ private final class WorkflowReplies: @unchecked Sendable {
   #expect(request.params["content"] == nil && guide["content"] == nil)
   #expect(model.workflow?.workflow.guides.first?.expectedSha256 == "read-hash")
 }
+
+// Selected-file staging uses only this private service and synthetic paths.
+private final class FileStagingReplies: @unchecked Sendable {
+  let base = Replies()
+  let lock = NSLock()
+  let workspaceID: String
+  var version: Int? = 1
+  var snapshot = "file-code"
+  var statusFails = false
+  var holdWrite = false
+  var failure = ""
+  var stageRequests: [[String: Any]] = []
+  var statusCalls = 0
+  var files: [[String: String]] = [
+    ["path": "a.swift", "index": "M", "worktree": "M"],
+    ["path": "b.swift", "index": " ", "worktree": "M"],
+    ["path": "new.swift", "index": "?", "worktree": "?"],
+  ]
+  let arrived = Flag()
+  let gate = DispatchSemaphore(value: 0)
+  init(workspaceID: String = "file-origin", task: Bool = false) {
+    self.workspaceID = workspaceID
+    base.diffFails = false
+    base.includeTask = task
+  }
+  func respond(_ request: [String: Any]) -> [String: Any]? {
+    let method = request["method"] as? String ?? ""
+    let params = request["params"] as? [String: Any] ?? [:]
+    if method == "stage_file" {
+      let state = lock.withLock {
+        stageRequests.append(params)
+        return (holdWrite, failure)
+      }
+      if state.0 { arrived.value = true; _ = gate.wait(timeout: .now() + .seconds(5)) }
+      if !["", "disconnect"].contains(state.1) {
+        return ["schema_version": 1, "error": ["code": state.1, "message": "synthetic file-stage rejection"]]
+      }
+      lock.withLock {
+        if let index = files.firstIndex(where: { $0["path"] == params["path"] as? String }) {
+          if params["staged"] as? Bool == true {
+            let wasNew = files[index]["index"] == "A"
+            files[index]["index"] = wasNew ? "?" : " "
+            files[index]["worktree"] = wasNew ? "?" : "M"
+          } else {
+            files[index]["index"] = files[index]["index"] == "?" ? "A" : "M"
+            files[index]["worktree"] = " "
+          }
+        }
+        snapshot = "file-code-\(stageRequests.count)"
+      }
+      return state.1 == "disconnect" ? nil : ["schema_version": 1, "result": [:]]
+    }
+    if method == "list_workspaces" {
+      return ["schema_version": 1, "result": [["schema_version": 1, "id": workspaceID,
+        "repositories": [["id": "a", "path": "/tmp/\(workspaceID)-a"], ["id": "b", "path": "/tmp/\(workspaceID)-b"]], "groups": []]]]
+    }
+    if method == "get_repo_status" {
+      return lock.withLock {
+        statusCalls += 1
+        if statusFails { return ["schema_version": 1, "error": ["code": "git_failed", "message": "synthetic status failure"]] }
+        let repo = params["repo_id"] as? String ?? "a"
+        let folder = params["op_id"] == nil ? "/tmp/\(workspaceID)-\(repo)" : "/tmp/synthetic-\(repo)"
+        var value: [String: Any] = ["path": folder, "snapshot_hash": snapshot,
+          "snapshot": ["head": "head", "branch": "refs/heads/main", "index_hash": snapshot],
+          "files": files, "graph": [], "refs": [], "worktrees": "", "conflict": false, "git_version": "test"]
+        if let version { value["file_staging_version"] = version }
+        return ["schema_version": 1, "result": value]
+      }
+    }
+    if method == "get_diff" {
+      return lock.withLock {
+        let path = params["path"] as? String ?? ""
+        let isNew = path == "new.swift"
+        let hunks = isNew ? [] : ["@@ -1 +1 @@\n-a\n+b\n"]
+        return ["schema_version": 1, "result": ["snapshot_hash": snapshot, "path": path,
+          "staged": params["staged"] as? Bool ?? false, "header": isNew ? "" : "header\n",
+          "hunks": hunks, "text": isNew ? "" : "header\n" + hunks.joined(), "can_stage_hunks": !isNew]]
+      }
+    }
+    return base.respond(request)
+  }
+}
+
+@Test(arguments: [nil, 0, 2] as [Int?]) @MainActor
+func selectedFileStagingRequiresTheAdvertisedEngineVersion(version: Int?) async throws {
+  let replies = FileStagingReplies(); replies.version = version
+  let server = try TestService { replies.respond($0) }
+  let store = WorkbenchStore(socketPath: server.path); await store.connect()
+  #expect(store.repository?.fileStagingVersion == version)
+  #expect(!store.canStageSelectedFile); #expect(store.canMarkRead)
+  await store.stageSelectedFile()
+  #expect(replies.lock.withLock { replies.stageRequests.isEmpty })
+  #expect(replies.base.lock.withLock { replies.base.stageCalls } == 0)
+  #expect(store.error?.contains("엔진") == true)
+}
+
+@Test(arguments: [false, true]) @MainActor
+func selectedFileStagingCapturesSourceAndIndexSideInTheChosenFolder(task: Bool) async throws {
+  let replies = FileStagingReplies(task: task)
+  let server = try TestService { replies.respond($0) }
+  let store = WorkbenchStore(socketPath: server.path); await store.connect()
+  if task { store.select(.init(repoId: "a", opId: "op")); try await settleSelection(store) }
+  let originalSnapshot = try #require(store.repository?.snapshotHash)
+  #expect(store.canStageSelectedFile)
+  await store.stageSelectedFile()
+  let stage = try #require(replies.lock.withLock { replies.stageRequests.first })
+  #expect(stage["repo_id"] as? String == "a")
+  #expect(stage["op_id"] as? String == (task ? "op" : nil))
+  #expect(stage["path"] as? String == "a.swift")
+  #expect(stage["snapshot_hash"] as? String == originalSnapshot)
+  #expect(stage["staged"] as? Bool == false)
+  #expect(stage["hunk_index"] == nil && stage["diff_hash"] == nil)
+  #expect(store.repository?.files.first { $0.path == "a.swift" }?.worktree == " ")
+  #expect(store.repository?.files.first { $0.path == "b.swift" }?.worktree == "M")
+  #expect(store.repository?.files.first { $0.path == "new.swift" }?.index == "?")
+
+  store.chooseStaged(true); await store.refresh(forceDiff: true)
+  let stagedSnapshot = try #require(store.repository?.snapshotHash)
+  await store.stageSelectedFile()
+  let unstage = try #require(replies.lock.withLock { replies.stageRequests.last })
+  #expect(replies.lock.withLock { replies.stageRequests.count } == 2)
+  #expect(unstage["repo_id"] as? String == "a")
+  #expect(unstage["op_id"] as? String == (task ? "op" : nil))
+  #expect(unstage["path"] as? String == "a.swift")
+  #expect(unstage["snapshot_hash"] as? String == stagedSnapshot)
+  #expect(unstage["staged"] as? Bool == true)
+  #expect(store.repository?.files.first { $0.path == "a.swift" }?.index == " ")
+  #expect(store.selectedFile.isEmpty); #expect(store.diff == nil)
+  #expect(replies.base.lock.withLock { replies.base.stageCalls } == 0)
+}
+
+@Test @MainActor func selectedNewFileCanStageWithoutAnOrdinaryHunkPreview() async throws {
+  let replies = FileStagingReplies(); let server = try TestService { replies.respond($0) }
+  let store = WorkbenchStore(socketPath: server.path); await store.connect()
+  store.selectedFile = "new.swift"; await store.refresh(forceDiff: true)
+  #expect(store.diff?.hunks.isEmpty == true); #expect(store.diff?.canStageHunks == false)
+  #expect(store.selectedFileChange?.index == "?"); #expect(store.canStageSelectedFile)
+  await store.stageSelectedFile()
+  #expect(replies.lock.withLock { replies.stageRequests.first?["path"] as? String } == "new.swift")
+  #expect(store.repository?.files.first { $0.path == "new.swift" }?.index == "A")
+  #expect(store.repository?.files.first { $0.path == "b.swift" }?.worktree == "M")
+}
+
+@Test @MainActor func selectedFileStagingRejectsOldFileSideFolderAndStatus() async throws {
+  let replies = FileStagingReplies(); let server = try TestService { replies.respond($0) }
+  let store = WorkbenchStore(socketPath: server.path); await store.connect()
+  let location = try #require(store.selection); let snapshot = try #require(store.repository?.snapshotHash)
+  store.chooseFile("b.swift")
+  await store.stageFile("a.swift", staged: false, expectedSnapshot: snapshot, at: location)
+  store.chooseFile("a.swift"); store.chooseStaged(true)
+  await store.stageFile("a.swift", staged: false, expectedSnapshot: snapshot, at: location)
+  store.chooseStaged(false); store.select(.init(repoId: "b")); try await settleSelection(store)
+  await store.stageFile("a.swift", staged: false, expectedSnapshot: snapshot, at: location)
+  store.select(location); try await settleSelection(store)
+  replies.lock.withLock { replies.snapshot = "external-change" }
+  await store.refresh(forceDiff: true)
+  await store.stageFile("a.swift", staged: false, expectedSnapshot: snapshot, at: location)
+  replies.lock.withLock { replies.statusFails = true }
+  await store.refresh()
+  #expect(store.selectionCheckFailed); #expect(!store.canStageSelectedFile)
+  await store.stageSelectedFile()
+  #expect(replies.lock.withLock { replies.stageRequests.isEmpty })
+  #expect(replies.base.lock.withLock { replies.base.stageCalls } == 0)
+}
+
+@Test @MainActor func rejectedFileStagingDoesNotFallBackToHunkWritesOrRetry() async throws {
+  let replies = FileStagingReplies(); replies.failure = "unknown_method"
+  let server = try TestService { replies.respond($0) }
+  let store = WorkbenchStore(socketPath: server.path); await store.connect()
+  await store.stageSelectedFile(); await store.refresh()
+  #expect(replies.lock.withLock { replies.stageRequests.count } == 1)
+  #expect(replies.base.lock.withLock { replies.base.stageCalls } == 0)
+  #expect(store.submissionWarnings.isEmpty); #expect(store.error?.contains("버전") == true)
+}
+
+@Test @MainActor func lateFileStagingOutcomeKeepsItsOriginAndDoesNotPublishIntoTheNextWorkspace() async throws {
+  let first = FileStagingReplies(); first.holdWrite = true; first.failure = "disconnect"
+  let second = FileStagingReplies(workspaceID: "file-destination")
+  let serverA = try TestService { first.respond($0) }; let serverB = try TestService { second.respond($0) }
+  let store = WorkbenchStore(socketPath: serverA.path); await store.connect()
+  store.commitMessage = "origin draft"
+  let readsBeforeWrite = first.lock.withLock { first.statusCalls }
+  let submission = Task { await store.stageSelectedFile() }; try await wait(first.arrived)
+  store.chooseFile("b.swift")
+  store.socketPath = serverB.path
+  first.gate.signal(); await submission.value
+  #expect(first.lock.withLock { first.statusCalls } == readsBeforeWrite)
+  await store.connect()
+  #expect(store.workspaceTitle == "file-destination")
+  #expect(store.repository?.path == "/tmp/file-destination-a")
+  #expect(store.repository?.snapshotHash == "file-code")
+  #expect(store.commitMessage.isEmpty); #expect(store.error == nil)
+  let warning = try #require(store.submissionWarnings.first)
+  #expect(warning.workspaceTitle == "file-origin")
+  #expect(warning.workspacePath == "/tmp/file-origin-a")
+  #expect(warning.message.contains("a.swift")); #expect(!warning.message.contains("b.swift"))
+  #expect(first.lock.withLock { first.stageRequests.count } == 1)
+  #expect(second.lock.withLock { second.stageRequests.isEmpty })
+}

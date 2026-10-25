@@ -1,6 +1,9 @@
 mod deadline;
+mod file_conversion;
 mod file_hash;
+mod file_staging;
 pub use deadline::{check_deadline, fresh_deadline, with_deadline};
+pub use file_staging::stage_file;
 mod process;
 pub mod remotes;
 use anyhow::{Context, Result, bail, ensure};
@@ -581,6 +584,7 @@ fn review_key(snapshot: &Snapshot, file: &str) -> Result<String> {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoView {
+    pub file_staging_version: u32,
     pub path: PathBuf,
     pub snapshot_hash: String,
     pub snapshot: SnapshotSummary,
@@ -655,6 +659,7 @@ pub fn view(path: &Path) -> Result<RepoView> {
         Err(error) => return Err(error),
     };
     Ok(RepoView {
+        file_staging_version: 1,
         path: path.into(),
         snapshot_hash: digest(&snapshot)?,
         snapshot: snapshot.summary()?,
@@ -876,7 +881,13 @@ pub fn diff(path: &Path, file: &str, staged: bool) -> Result<Diff> {
         args.push("--cached");
     }
     args.extend(["--", file]);
-    let bytes = git_bytes(path, &args)?;
+    let mut bytes = git_bytes(path, &args)?;
+    if !staged
+        && bytes.is_empty()
+        && let Some(preview) = file_staging::untracked_preview(path, file, &snap)?
+    {
+        bytes = preview;
+    }
     let invalid_encoding = std::str::from_utf8(&bytes).is_err();
     let text = String::from_utf8_lossy(&bytes).into_owned();
     ensure!(
@@ -892,7 +903,17 @@ pub fn diff(path: &Path, file: &str, staged: bool) -> Result<Diff> {
     );
     let mut diff = parse_diff(text, digest(&snap)?, file, staged, !invalid_encoding);
     if invalid_encoding {
-        diff.encoding_warning = Some("UTF-8로 읽을 수 없는 문자를 대체해 표시했습니다. 정확한 인코딩을 확인하기 전에는 읽기 전용입니다.".into());
+        diff.encoding_warning = Some("UTF-8로 읽을 수 없는 문자를 대체해 표시했습니다. 부분 스테이징은 지원하지 않습니다. 파일 전체 스테이징은 원본 바이트를 사용하므로 정확한 인코딩을 확인하세요.".into());
+    }
+    if !staged
+        && diff.text.is_empty()
+        && snap
+            .files
+            .get(file)
+            .is_some_and(|value| value.starts_with("symlink:"))
+        && git_bytes(path, &["ls-files", "--stage", "-z", "--", file])?.is_empty()
+    {
+        diff.encoding_warning = Some("새 심볼릭 링크의 일반 텍스트 Diff는 표시하지 않습니다. 파일 전체 스테이징은 링크 대상 경로만 포함하며 대상 파일을 읽지 않습니다.".into());
     }
     diff.review_key = Some(review_key(&snap, file)?);
     Ok(diff)

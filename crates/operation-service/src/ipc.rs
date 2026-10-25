@@ -221,7 +221,10 @@ pub fn call(socket: &Path, request: &Request) -> Result<Response> {
         "configure_remote" | "fetch_remote" | "pull_remote" | "push_remote"
     ) {
         360
-    } else if matches!(request.method.as_str(), "stage_hunk" | "commit") {
+    } else if matches!(
+        request.method.as_str(),
+        "stage_hunk" | "stage_file" | "commit"
+    ) {
         180
     } else {
         30

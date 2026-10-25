@@ -97,6 +97,9 @@ struct NativePreview {
         layout.hidePane(.commit)
         layout.showPane(.details)
       }
+      if ProcessInfo.processInfo.environment["WORKBENCH_PREVIEW_VERIFY_FILE_STAGING"] == "1" {
+        try await verifyFileStaging(store)
+      }
       if ProcessInfo.processInfo.environment["WORKBENCH_PREVIEW_ORIGINAL"] == "1",
         let selection = store.selection
       {
@@ -386,6 +389,57 @@ struct NativePreview {
       if let found = diffScroll(in: child) { return found }
     }
     return nil
+  }
+
+  @MainActor private static func verifyFileStaging(_ store: WorkbenchStore) async throws {
+    try requireSyntheticFixture(store)
+    let path = "Notes/review.md"
+    guard let initial = store.repository, let selection = store.selection,
+      initial.fileStagingVersion == 1,
+      initial.files.first(where: { $0.path == path })?.index == "?"
+    else { throw CocoaError(.validationMissingMandatoryProperty) }
+    let file = URL(fileURLWithPath: initial.path).appendingPathComponent(path)
+    let original = try Data(contentsOf: file)
+    // reviewKey includes the whole index hash, so it changes for untouched siblings too.
+    // Compare their visible Git status instead of treating that review identity as file state.
+    func siblingStatus(_ view: RepositoryStatus) -> [String] {
+      view.files.filter { $0.path != path }.map { "\($0.path)\u{0}\($0.index)\u{0}\($0.worktree)" }.sorted()
+    }
+    let siblings = siblingStatus(initial)
+    func showFile(staged: Bool) async throws {
+      store.chooseFile(path, staged: staged)
+      for _ in 0..<250 {
+        if store.diff?.path == path && store.diff?.staged == staged && store.canStageSelectedFile { return }
+        if let error = store.error {
+          throw NSError(domain: "FileStagingPreview", code: 1, userInfo: [NSLocalizedDescriptionKey: error])
+        }
+        try await Task.sleep(for: .milliseconds(20))
+      }
+      throw CocoaError(.validationMissingMandatoryProperty)
+    }
+    try await showFile(staged: false)
+    guard store.diff?.text.contains("Synthetic review checklist") == true,
+      store.diff?.canStageHunks == false
+    else { throw CocoaError(.validationMissingMandatoryProperty) }
+    await store.stageFile(path, staged: false, expectedSnapshot: initial.snapshotHash, at: selection)
+    guard store.error == nil, let staged = store.repository,
+      staged.files.first(where: { $0.path == path })?.isStaged == true,
+      siblingStatus(staged) == siblings,
+      staged.snapshot.head == initial.snapshot.head, try Data(contentsOf: file) == original
+    else { throw CocoaError(.validationMissingMandatoryProperty) }
+    try await showFile(staged: true)
+    await store.stageFile(path, staged: true, expectedSnapshot: staged.snapshotHash, at: selection)
+    guard store.error == nil, store.repository?.snapshotHash == initial.snapshotHash,
+      store.repository?.snapshot.indexHash == initial.snapshot.indexHash,
+      try Data(contentsOf: file) == original
+    else { throw CocoaError(.validationMissingMandatoryProperty) }
+    try await showFile(staged: false)
+    if ProcessInfo.processInfo.environment["WORKBENCH_PREVIEW_FILE_STAGING_VIEW"] == "staged" {
+      await store.stageFile(path, staged: false, expectedSnapshot: initial.snapshotHash, at: selection)
+      guard store.error == nil else { throw CocoaError(.validationMissingMandatoryProperty) }
+      try await showFile(staged: true)
+    }
+    print("Verified actual new-file preview, selected-file stage and unstage through Swift/Rust, unchanged HEAD/working bytes/sibling entries, and restored initial snapshot")
   }
 
   @MainActor private static func verifyTaskContext(_ store: WorkbenchStore) async throws {

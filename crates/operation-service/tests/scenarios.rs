@@ -72,6 +72,122 @@ fn diff_keeps_blank_context_prefixes_under_repository_config() {
 }
 
 #[test]
+fn selected_file_rpc_is_capability_gated_strict_fresh_and_never_replayed() {
+    let f = Fixture::new();
+    let path = &f.workspace.repo("ios-app").unwrap().path;
+    let untouched_index = git::git_bytes(path, &["show", ":notes.txt"]).unwrap();
+    fs::write(path.join("new-file"), "new reviewed content\n").unwrap();
+    fs::write(path.join("notes.txt"), "unselected worktree\n").unwrap();
+    let original_head = git::oid(path, "HEAD").unwrap();
+    let status = f.rpc("get_repo_status", json!({"repo_id":"ios-app"}));
+    assert_eq!(status["file_staging_version"], 1);
+    let params =
+        json!({"repo_id":"ios-app","path":"new-file","snapshot_hash":status["snapshot_hash"]});
+    let original = git::snapshot(path).unwrap();
+    for (field, bad) in [
+        ("staged", json!(null)),
+        ("staged", json!("false")),
+        ("op_id", json!(false)),
+        ("op_id", json!("")),
+        ("unknown", json!(true)),
+    ] {
+        let mut malformed = params.clone();
+        malformed[field] = bad;
+        let response = f.service.dispatch(Request {
+            method: "stage_file".into(),
+            params: malformed,
+        });
+        assert_eq!(response.error.unwrap().code, "invalid_parameter");
+        assert_eq!(git::snapshot(path).unwrap(), original);
+    }
+    let result = f.rpc("stage_file", params.clone());
+    assert_eq!(result["status"], "staged");
+    assert_eq!(result["refresh_required"], false);
+    assert_eq!(result["view"]["file_staging_version"], 1);
+    assert_eq!(
+        git::git(path, &["show", ":new-file"]).unwrap(),
+        "new reviewed content\n"
+    );
+    assert_eq!(
+        git::git_bytes(path, &["show", ":notes.txt"]).unwrap(),
+        untouched_index
+    );
+    let after = git::snapshot(path).unwrap();
+    let replay = f.service.dispatch(Request {
+        method: "stage_file".into(),
+        params,
+    });
+    assert_eq!(replay.error.unwrap().code, "stale_snapshot");
+    assert_eq!(git::snapshot(path).unwrap(), after);
+    f.rpc("stage_file", json!({"repo_id":"ios-app","path":"new-file","staged":true,"snapshot_hash":result["view"]["snapshot_hash"]}));
+    assert!(
+        git::git_bytes(path, &["ls-files", "--", "new-file"])
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        fs::read(path.join("new-file")).unwrap(),
+        b"new reviewed content\n"
+    );
+    assert_eq!(
+        fs::read(path.join("notes.txt")).unwrap(),
+        b"unselected worktree\n"
+    );
+    assert_eq!(git::oid(path, "HEAD").unwrap(), original_head);
+}
+
+#[test]
+fn selected_file_rpc_targets_only_the_authorized_ready_task_folder() {
+    let f = Fixture::new();
+    let op = f.execute(Mode::Materialize, "selected-file-scope");
+    assert_eq!(op.status, "ready");
+    let source = &f.workspace.repo("ios-app").unwrap().path;
+    let task = &op
+        .repos
+        .iter()
+        .find(|repo| repo.plan.repo_id == "ios-app")
+        .unwrap()
+        .plan
+        .worktree_path;
+    fs::write(source.join("new-file"), "original source\n").unwrap();
+    fs::write(task.join("new-file"), "task selected\n").unwrap();
+    let source_before = git::snapshot(source).unwrap();
+    let task_head = git::oid(task, "HEAD").unwrap();
+    let status = f.rpc(
+        "get_repo_status",
+        json!({"repo_id":"ios-app","op_id":op.id}),
+    );
+    let params = json!({"repo_id":"ios-app","op_id":op.id,"path":"new-file","snapshot_hash":status["snapshot_hash"]});
+    let lock = workbench_service::repo_lock(task).unwrap();
+    let busy = f.service.dispatch(Request {
+        method: "stage_file".into(),
+        params: params.clone(),
+    });
+    assert_eq!(busy.error.unwrap().code, "repository_busy");
+    drop(lock);
+    let result = f.rpc("stage_file", params);
+    assert_eq!(result["view"]["path"], task.to_str().unwrap());
+    assert_eq!(
+        git::git(task, &["show", ":new-file"]).unwrap(),
+        "task selected\n"
+    );
+    assert_eq!(git::snapshot(source).unwrap(), source_before);
+    assert_eq!(git::oid(task, "HEAD").unwrap(), task_head);
+    let mut stale = json!({"repo_id":"ios-app","op_id":op.id,"path":"new-file","staged":true,"snapshot_hash":result["view"]["snapshot_hash"]});
+    stale["op_id"] = json!("missing-operation");
+    assert!(
+        f.service
+            .dispatch(Request {
+                method: "stage_file".into(),
+                params: stale
+            })
+            .error
+            .is_some()
+    );
+    assert_eq!(git::snapshot(source).unwrap(), source_before);
+}
+
+#[test]
 fn malformed_optional_scope_never_falls_back_to_the_original_repository() {
     let f = Fixture::new();
     let op = f.execute(Mode::Materialize, "typed-rpc-scope");
@@ -128,6 +244,10 @@ fn malformed_optional_scope_never_falls_back_to_the_original_repository() {
             (
                 "stage_hunk",
                 json!({"repo_id":"ios-app","path":"notes.txt","hunk_index":0,"snapshot_hash":diff.snapshot_hash,"diff_hash":hash(diff.text.as_bytes())}),
+            ),
+            (
+                "stage_file",
+                json!({"repo_id":"ios-app","path":"notes.txt","snapshot_hash":diff.snapshot_hash}),
             ),
             (
                 "commit",
@@ -534,7 +654,7 @@ fn builtin_aliases_do_not_execute_and_retargeted_originals_are_rejected() {
 }
 
 #[test]
-fn large_files_keep_status_available_and_non_utf8_diffs_stay_read_only() {
+fn large_files_keep_status_available_and_non_utf8_hunks_are_read_only_with_exact_file_staging() {
     let f = Fixture::new();
     let path = &f.workspace.repo("ios-app").unwrap().path;
     fs::File::create(path.join("large.bin"))
@@ -557,11 +677,24 @@ fn large_files_keep_status_available_and_non_utf8_diffs_stay_read_only() {
         diff["encoding_warning"]
             .as_str()
             .unwrap()
-            .contains("읽기 전용")
+            .contains("부분 스테이징은 지원하지 않습니다")
     );
     let rejected = f.service.dispatch(Request { method:"stage_hunk".into(), params:json!({"repo_id":"ios-app","path":"notes.txt","hunk_index":0,"snapshot_hash":diff["snapshot_hash"],"diff_hash":hash(diff["text"].as_str().unwrap().as_bytes())}) });
     assert_eq!(rejected.error.unwrap().code, "unsupported_hunk_change");
     assert_eq!(before, git::snapshot(path).unwrap());
+    let result = f.rpc(
+        "stage_file",
+        json!({"repo_id":"ios-app","path":"notes.txt","snapshot_hash":diff["snapshot_hash"]}),
+    );
+    assert_eq!(
+        git::git_bytes(path, &["show", ":notes.txt"]).unwrap(),
+        b"legacy text \xbe\xc8\xb3\xe7\n"
+    );
+    assert_eq!(
+        fs::read(path.join("notes.txt")).unwrap(),
+        b"legacy text \xbe\xc8\xb3\xe7\n"
+    );
+    assert_eq!(result["view"]["snapshot"]["head"], before.head);
 }
 
 #[test]

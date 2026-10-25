@@ -39,6 +39,8 @@ enum UserFacingFailure {
       case "remote_outcome_unknown": return UIError.remoteOutcomeUnknown.localizedDescription
       case "unsupported_remote_config", "unsupported_remote_command", "unsupported_remote_endpoints", "unsupported_url_rewrite", "unsupported_partial_clone", "unsupported_http_config", "unsupported_http_configuration", "unsupported_repository_format": return "현재 Git 연결 설정을 지원하지 않습니다. 원격 URL·URL 재작성·전송 명령·HTTP 설정을 확인해 주세요. 사용자 지정 SSH 설정은 지원하지 않습니다."
       case "unsupported_external_filter": return "Git 외부 필터가 등록되어 있습니다. 현재 버전은 실제 사용 여부와 관계없이 전역 설정을 포함한 외부 필터 환경을 지원하지 않습니다."
+      case "file_staging_git_upgrade_required": return "일반 파일 전체 스테이징에는 Apple Git 2.42 이상이 필요합니다. Xcode 또는 Command Line Tools를 업데이트해 주세요."
+      case "unsupported_file_conversion": return "이 파일의 Git 속성이나 변환 설정을 안전하게 처리할 수 없어 스테이징하지 않았습니다. .gitattributes와 전역·저장소 속성 설정을 Git에서 확인해 주세요."
       case "unsafe_task_worktree", "wrong_task_branch": return "작업 폴더의 위치나 브랜치가 바뀌었습니다. 원래 폴더와 브랜치를 복구한 뒤 새로고침해 주세요."
       case "unsafe_source_repository": return "원래 저장소의 Git 위치 설정이 바뀌었습니다. 저장소 설정을 확인하고 다시 열어 주세요."
       case "git_unavailable": return "Git을 실행하지 못했습니다. macOS의 Command Line Tools 또는 Xcode 설치 상태를 확인해 주세요."
@@ -46,6 +48,8 @@ enum UserFacingFailure {
       case "unsafe_repository_lock": return "저장소의 작업 잠금 파일이 일반 파일이 아니거나 안전하지 않습니다. Git 폴더의 workbench.operation.lock을 확인해 주세요."
       case "invalid_label": return "작업 이름은 줄바꿈 없이 200바이트 이내로 입력해 주세요."
       case "unsupported_hunk_change": return "이 변경은 앱에서 부분 스테이징할 수 없습니다. Git에서 파일 종류와 전체 변경을 확인해 주세요."
+      case "invalid_file_stage_path", "file_not_changed_on_requested_side": return "선택한 파일의 변경 상태가 바뀌었습니다. 새로고침한 뒤 해당 목록에서 파일을 다시 선택해 주세요."
+      case "file_stage_too_large": return "32 MiB를 넘는 파일은 앱에서 스테이징할 수 없습니다. Git에서 파일을 확인하고 추가해 주세요."
       case "journal_configuration_mismatch": return "저장한 작업 기록과 저장소 구성이 맞지 않습니다. 기존 기록을 다른 설정으로 열 수 없습니다."
       case "stale_source_snapshot": return "계획을 만든 뒤 원래 프로젝트 폴더가 바뀌었습니다. 현재 변경은 유지됩니다. 현재 상태를 기준으로 새 작업을 만들어 주세요."
       case "unsupported_submodule_or_directory": return "이 저장소에는 아직 지원하지 않는 하위 저장소나 특수 파일이 있습니다. Git에서 해당 항목을 확인해 주세요."

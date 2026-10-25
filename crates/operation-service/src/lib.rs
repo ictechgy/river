@@ -38,7 +38,7 @@ fn request_budget_seconds(method: &str) -> u64 {
         // one write with its own 120s budget, then refresh gets at most 15s.
         // A 40s preflight leaves nominal response/scheduling headroom; giving
         // preflight the entire client budget would let writes outlive it.
-        "stage_hunk" | "commit" => 40,
+        "stage_hunk" | "stage_file" | "commit" => 40,
         _ => 25,
     }
 }
@@ -964,16 +964,18 @@ impl Service {
                 if request.method == "get_repo_status" { Ok(serde_json::to_value(git::view(&path)?)?) }
                 else { Ok(serde_json::to_value(git::diff(&path,string("path")?,staged)?)?) }
             }
-            "stage_hunk" | "commit" => {
+            "stage_hunk" | "stage_file" | "commit" => {
                 let repo_id=string("repo_id")?;
                 let allowed: &[&str] = if request.method == "stage_hunk" {
                     &["repo_id", "op_id", "path", "staged", "hunk_index", "snapshot_hash", "diff_hash"]
+                } else if request.method == "stage_file" {
+                    &["repo_id", "op_id", "path", "staged", "snapshot_hash"]
                 } else {
                     &["repo_id", "op_id", "snapshot_hash", "message"]
                 };
                 reject_unknown_parameters(&p, allowed)?;
                 let op_id=optional_id(&p, "op_id")?;
-                let staged=if request.method == "stage_hunk" { optional_bool(&p, "staged", false)? } else { false };
+                let staged=if request.method != "commit" { optional_bool(&p, "staged", false)? } else { false };
                 let _guard=self.mutations.try_lock().map_err(|_| anyhow::anyhow!("repository_busy"))?;
                 ensure!(!self.is_stopping(), "service_stopping");
                 if let Some(id)=op_id {
@@ -986,6 +988,11 @@ impl Service {
                 let _lock=repo_lock(&path)?;
                 let path=self.target(repo_id,op_id)?;
                 match request.method.as_str() {
+                    "stage_file" => {
+                        git::stage_file(&path,string("path")?,staged,string("snapshot_hash")?)?;
+                        let view = git::fresh_deadline(std::time::Duration::from_secs(15), || git::view(&path)).ok();
+                        Ok(json!({"status":"staged","refresh_required":view.is_none(),"view":view}))
+                    }
                     "stage_hunk" => {
                         git::stage_hunk(&path,string("path")?,staged,p.get("hunk_index").and_then(Value::as_u64).context("missing_hunk_index")? as usize,string("snapshot_hash")?,string("diff_hash")?)?;
                         let view = git::fresh_deadline(std::time::Duration::from_secs(15), || git::view(&path)).ok();
@@ -1117,6 +1124,8 @@ mod lifecycle_tests {
         let params = if method == "commit" {
             git::git(&path, &["add", "--", file]).unwrap();
             json!({"repo_id":"ios-app", "snapshot_hash":digest(&git::snapshot(&path).unwrap()).unwrap(), "message":"mutation budget regression"})
+        } else if method == "stage_file" {
+            json!({"repo_id":"ios-app", "path":file, "snapshot_hash":digest(&git::snapshot(&path).unwrap()).unwrap()})
         } else {
             let diff = git::diff(&path, file, false).unwrap();
             json!({"repo_id":"ios-app", "path":file, "hunk_index":0, "snapshot_hash":diff.snapshot_hash, "diff_hash":hash(diff.text.as_bytes())})
@@ -1151,6 +1160,11 @@ mod lifecycle_tests {
     #[test]
     fn hunk_staging_has_time_for_validation_after_twenty_seconds_of_preflight() {
         interactive_write_after_preflight("stage_hunk");
+    }
+
+    #[test]
+    fn file_staging_has_time_for_validation_after_twenty_seconds_of_preflight() {
+        interactive_write_after_preflight("stage_file");
     }
 
     #[test]
@@ -1331,6 +1345,10 @@ mod lifecycle_tests {
         });
         assert!(read.error.is_none());
         for (method, params) in [
+            (
+                "stage_file",
+                json!({"repo_id":"api","op_id":op.id,"path":"Config/Version.xcconfig","snapshot_hash":"unused"}),
+            ),
             (
                 "stage_hunk",
                 json!({"repo_id":"api","op_id":op.id,"path":"Config/Version.xcconfig","hunk_index":0,"snapshot_hash":"unused","diff_hash":"unused"}),
