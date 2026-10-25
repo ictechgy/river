@@ -144,7 +144,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 swift test --package-path apps/macos
 ```
 
-On 2026-10-25, **218 Swift tests** and **141 Rust tests** passed in the developer checkout; Rust formatting and Clippy checks passed. Unchanged Python sources retain alpha.6’s **56 Python** test validation. Native synthetic scenarios exercise the actual Rust service, criterion identity/history, report links, and explicit guide reading and pinning. Earlier read-only public GitHub/GitLab clone/fetch checks remain historical validation of unchanged remote code. There is no CI yet. These results do not establish behavior on real user repositories or performance on large repositories.
+On 2026-10-25, **219 Swift tests** and **141 Rust tests** passed in the developer checkout; Rust formatting and Clippy checks passed. Unchanged Python sources retain alpha.6’s **56 Python** test validation. Native synthetic scenarios exercise the actual Rust service, criterion identity/history, report links, and explicit guide reading and pinning. Earlier read-only public GitHub/GitLab clone/fetch checks remain historical validation of unchanged remote code. There is no CI yet. These results do not establish behavior on real user repositories or performance on large repositories.
 
 Detailed guides are currently in Korean:
 

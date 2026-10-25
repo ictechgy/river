@@ -59,6 +59,9 @@ public final class TaskContextStore: ObservableObject {
   }
   public var isDirty: Bool {
     guard let draft, let context = bundle?.context else { return false }
+    // An incompatible representation has no valid comparison baseline. Even
+    // empty arrays can represent unsaved deletions and must survive refreshes.
+    if draftUsesWorkflow != supportsWorkflow { return true }
     let saved = ContextDraft(context, workflow: workflow?.workflow)
     let criteriaChanged = draft.workflowRevision == nil ? draft.criteria != saved.criteria
       : draft.criteriaEntries != saved.criteriaEntries || draft.guides != saved.guides

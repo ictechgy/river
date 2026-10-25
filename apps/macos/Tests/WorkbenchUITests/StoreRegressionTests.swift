@@ -2650,6 +2650,44 @@ private final class WorkflowReplies: @unchecked Sendable {
   #expect(model.isDirty)
 }
 
+@Test @MainActor func emptyWorkflowDeletionsSurviveDowngradeRefreshNavigationAndReconnectUntilReload() async throws {
+  for deletingGuides in [false, true] {
+    let replies = WorkflowReplies()
+    if deletingGuides {
+      replies.criteria = []
+      replies.guides = [["id": "44444444-4444-4444-8444-444444444444", "repo_id": "a",
+        "kind": "procedure", "path": "docs/saved.md", "expected_sha256": NSNull()]]
+    }
+    let server = try TestService { replies.respond($0) }
+    let model = configuredWorkflowStore(server)
+    await model.refresh()
+    if deletingGuides { model.draft?.guides = [] } else { model.draft?.criteriaEntries = [] }
+    let deletion = model.draft
+    #expect(model.isDirty)
+    replies.lock.withLock { replies.capability = false }
+    for _ in 0..<3 {
+      await model.refresh()
+      #expect(model.draft == deletion && model.isDirty && model.draftUsesWorkflow)
+    }
+    let client = ServiceClient(socketPath: server.path)
+    model.configure(client: client, workspace: "space", location: .init(repoId: "b"),
+      contextOperationID: nil, operation: nil, title: "Other folder")
+    await model.refresh()
+    model.configure(client: client, workspace: "space", location: .init(repoId: "a"),
+      contextOperationID: nil, operation: nil, title: "Return to deletion")
+    await model.refresh(); await model.refresh()
+    #expect(model.draft == deletion && model.isDirty && model.draftUsesWorkflow)
+    replies.lock.withLock { replies.capability = true }
+    await model.refresh(); await model.refresh()
+    #expect(model.draft == deletion && model.isDirty && model.supportsWorkflow)
+    #expect(!replies.lock.withLock { replies.requests.contains { $0.method == "save_task_context" || $0.method == "save_task_workflow" } })
+    model.reloadDraft()
+    #expect(!model.isDirty)
+    if deletingGuides { #expect(model.draft?.guides.count == 1) }
+    else { #expect(model.draft?.criteriaEntries.count == 2) }
+  }
+}
+
 @Test @MainActor func workflowStaleAndUncertainSaveRetainIdentityAndDraftWithoutReplay() async throws {
   for transportFailure in [false, true] {
     let replies = WorkflowReplies()

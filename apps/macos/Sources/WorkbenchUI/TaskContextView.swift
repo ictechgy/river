@@ -291,7 +291,8 @@ private struct ContextEditor: View {
       }
       if let message = model.message { Text(message).font(.caption).foregroundStyle(.secondary) }
       HStack {
-        if model.isDirty || model.draft?.revision != model.bundle?.context.revision
+        if model.isDirty || model.draftUsesWorkflow != model.supportsWorkflow
+          || model.draft?.revision != model.bundle?.context.revision
           || (model.supportsWorkflow && model.draft?.workflowRevision != model.workflow?.workflow.revision) {
           Button("현재 저장본 불러오기") { if identity == model.identity { model.reloadDraft() } }
           Text("입력을 보관하려면 먼저 복사해 두세요.").font(.caption).foregroundStyle(WorkbenchTheme.warning)
