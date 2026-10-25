@@ -1,0 +1,404 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TaskWorkflowBundle",
+  "type": "object",
+  "properties": {
+    "compatibility": {
+      "type": "string"
+    },
+    "context": {
+      "$ref": "#/$defs/TaskContext"
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/WorkflowEvidence"
+      }
+    },
+    "history": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/WorkflowHistoryEntry"
+      }
+    },
+    "verifications": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/VerificationReceipt"
+      }
+    },
+    "version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "workflow": {
+      "$ref": "#/$defs/TaskWorkflowState"
+    }
+  },
+  "required": [
+    "version",
+    "compatibility",
+    "context",
+    "verifications",
+    "workflow",
+    "evidence",
+    "history"
+  ],
+  "$defs": {
+    "ClaimedReviewedState": {
+      "type": "object",
+      "properties": {
+        "head": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "snapshot_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "EvidenceKind": {
+      "type": "string",
+      "enum": [
+        "git_check",
+        "human_report",
+        "ai_report"
+      ]
+    },
+    "GuideKind": {
+      "type": "string",
+      "enum": [
+        "procedure",
+        "feature_map"
+      ]
+    },
+    "GuideReference": {
+      "type": "object",
+      "properties": {
+        "expected_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/GuideKind"
+        },
+        "path": {
+          "type": "string"
+        },
+        "repo_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "repo_id",
+        "kind",
+        "path"
+      ]
+    },
+    "ReportStatus": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "incomplete",
+        "tool_error",
+        "unknown"
+      ]
+    },
+    "TaskContext": {
+      "type": "object",
+      "properties": {
+        "criteria": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "notes": {
+          "type": "string"
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requirements_hash": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "purpose",
+        "criteria",
+        "references",
+        "notes",
+        "requirements_hash"
+      ]
+    },
+    "TaskWorkflowState": {
+      "type": "object",
+      "properties": {
+        "context_revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "criteria": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowCriterion"
+          }
+        },
+        "guides": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GuideReference"
+          }
+        },
+        "intent_hash": {
+          "type": "string"
+        },
+        "retired_count": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "context_revision",
+        "intent_hash",
+        "criteria",
+        "guides",
+        "retired_count"
+      ]
+    },
+    "Verdict": {
+      "type": "string",
+      "enum": [
+        "passed",
+        "failed",
+        "unknown"
+      ]
+    },
+    "VerificationReceipt": {
+      "type": "object",
+      "properties": {
+        "after_snapshot_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "finished_at": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "head": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/EvidenceKind"
+        },
+        "note": {
+          "type": "string"
+        },
+        "op_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "repo_id": {
+          "type": "string"
+        },
+        "requirements_hash": {
+          "type": "string"
+        },
+        "snapshot_hash": {
+          "type": "string"
+        },
+        "started_at": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "verdict": {
+          "$ref": "#/$defs/Verdict"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "repo_id",
+        "path",
+        "branch",
+        "head",
+        "snapshot_hash",
+        "requirements_hash",
+        "kind",
+        "verdict",
+        "started_at",
+        "finished_at",
+        "command",
+        "note",
+        "output",
+        "truncated"
+      ]
+    },
+    "WorkflowCriterion": {
+      "description": "Stable identity and immutable text revision. A link is a report association,\nnever a statement that a condition has been fulfilled.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "revision",
+        "text"
+      ]
+    },
+    "WorkflowEvidence": {
+      "type": "object",
+      "properties": {
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "claimed_reviewed_state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClaimedReviewedState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "criteria": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowCriterion"
+          }
+        },
+        "intent_hash": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "receipt_id": {
+          "type": "string"
+        },
+        "report_status": {
+          "$ref": "#/$defs/ReportStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "receipt_id",
+        "criteria",
+        "intent_hash",
+        "provider",
+        "model",
+        "artifacts",
+        "report_status"
+      ]
+    },
+    "WorkflowHistoryEntry": {
+      "type": "object",
+      "properties": {
+        "context_revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "criterion_count": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "saved_at": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "revision",
+        "context_revision",
+        "saved_at",
+        "criterion_count"
+      ]
+    }
+  }
+}

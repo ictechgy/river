@@ -3,6 +3,8 @@ pub mod ipc;
 pub mod registration;
 mod remotes;
 mod task_context;
+mod task_workflow;
+mod verification_guide;
 use anyhow::{Context, Result, bail, ensure};
 use fs2::FileExt;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -107,6 +109,11 @@ impl Service {
           CREATE TABLE IF NOT EXISTS task_contexts(scope TEXT PRIMARY KEY, body TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS verification_receipts(id TEXT PRIMARY KEY, scope TEXT NOT NULL, body TEXT NOT NULL);
           CREATE INDEX IF NOT EXISTS verification_scope ON verification_receipts(scope);
+          CREATE TABLE IF NOT EXISTS workflow_states(scope TEXT PRIMARY KEY, body TEXT NOT NULL, legacy_revision INTEGER NOT NULL, legacy_body_hash TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS workflow_versions(scope TEXT NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL, saved_at INTEGER NOT NULL, PRIMARY KEY(scope,revision));
+          CREATE TABLE IF NOT EXISTS workflow_ids(id TEXT PRIMARY KEY, scope TEXT NOT NULL);
+          CREATE INDEX IF NOT EXISTS workflow_ids_scope ON workflow_ids(scope);
+          CREATE TABLE IF NOT EXISTS workflow_evidence(receipt_id TEXT PRIMARY KEY REFERENCES verification_receipts(id), scope TEXT NOT NULL, body TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS plans(id TEXT PRIMARY KEY, body TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY, key TEXT NOT NULL UNIQUE, plan_id TEXT NOT NULL UNIQUE, body TEXT NOT NULL);
           CREATE INDEX IF NOT EXISTS operations_task_id ON operations(json_extract(body, '$.task_id'));
@@ -904,6 +911,11 @@ impl Service {
                 optional_id(&p, "op_id")?;
                 optional_id(&p, "context_op_id")?;
                 self.handle_task_context(&request.method, p)
+            }
+            "get_task_workflow" | "save_task_workflow" | "reset_task_workflow" | "record_workflow_report" | "read_verification_guide" => {
+                optional_id(&p, "op_id")?;
+                optional_id(&p, "context_op_id")?;
+                self.handle_task_workflow(&request.method, p)
             }
             "list_workspaces" => Ok(json!([{"schema_version":1,"id":self.workspace.id,"repositories":self.workspace.repositories,"groups":self.workspace.groups}])),
             "list_recipes" => Ok(json!(self.workspace.recipes.iter().map(|r|json!({"id":r.id,"repo_id":r.repo_id,"revision":r.revision,"writes":r.writes,"trusted":r.trusted_hash.is_some(),"target":r.target,"configuration":r.configuration})).collect::<Vec<_>>())),

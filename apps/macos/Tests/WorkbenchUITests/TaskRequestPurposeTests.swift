@@ -19,6 +19,6 @@ import Testing
   let verification = TaskRequestPurpose.verify.draft(observations: "observed")
   #expect(verification.contains("실행 준비 → 환경 확인 → 실제 기능 사용 → 증거 수집"))
   #expect(verification.contains("빌드 성공이나 Git 공백 검사만으로"))
-  #expect(verification.contains("개별 조건과 증거를 연결하거나 충족 여부를 판단한 결과가 아닙니다"))
+  #expect(verification.contains("조건 충족이나 실행을 River가 인증한 결과가 아닙니다"))
   #expect(TaskRequestPurpose.allCases == [.handoff, .verify])
 }

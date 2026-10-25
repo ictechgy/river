@@ -14,7 +14,7 @@ The app UI and detailed guides are currently in Korean. English translations of 
 
 ## Install on macOS
 
-**[Download River 0.1.0-alpha.7 for Apple Silicon](https://github.com/ictechgy/river/releases/download/v0.1.0-alpha.7/River-0.1.0-alpha.7-macos-arm64.dmg)** · [Release notes and checksums](https://github.com/ictechgy/river/releases/tag/v0.1.0-alpha.7)
+**[Download River 0.1.0-alpha.8 for Apple Silicon](https://github.com/ictechgy/river/releases/download/v0.1.0-alpha.8/River-0.1.0-alpha.8-macos-arm64.dmg)** · [Release notes and checksums](https://github.com/ictechgy/river/releases/tag/v0.1.0-alpha.8)
 
 - **Apple Silicon (arm64) only.** This release does not include an Intel build.
 - **macOS 14 or later is the declared target.** Runtime testing has only covered macOS 27.0.1; compatibility with older supported versions has not been verified.
@@ -27,7 +27,7 @@ The app UI and detailed guides are currently in Korean. English translations of 
 
 **Updates:** Starting with alpha.6, River checks for new releases automatically. Use **River → 업데이트 확인…** or **Settings → 업데이트** to check manually or disable automatic checks. Download, installation and restart require your choice. Save session drafts before restarting; active work postpones installation. **Alpha.5 and earlier need one manual installation of the current release.** See [updates](docs/updates.md).
 
-The app, bundled engine, and DMG have verified Developer ID signatures. This alpha is **not notarized by Apple**, so macOS may block its first launch. See the [release notes](docs/releases/v0.1.0-alpha.7.md) for verification details.
+The app, bundled engine, and DMG have verified Developer ID signatures. This alpha is **not notarized by Apple**, so macOS may block its first launch. See the [release notes](docs/releases/v0.1.0-alpha.8.md) for verification details.
 
 If macOS blocks opening because it cannot verify the developer or check the app, review the release status and source first. If you choose to continue, use **System Settings → Privacy & Security → Open Anyway** after attempting to open River, then confirm **Open**, as described in [Apple's guide](https://support.apple.com/en-us/102445).
 
@@ -47,9 +47,9 @@ A **workspace** defines a set of repositories and preparation rules. A **Task** 
 | Remote Git | Manage SSH/HTTPS remotes, clone repositories, fetch branch heads, pull with fast-forward integration, and push one branch. The transport works independently of GitHub, GitLab, Bitbucket or self-hosted provider APIs. |
 | Review continuity | Restore file, diff, and scroll state within the same workspace, then refresh Git state. Commit drafts last for the app session; personal review and scroll state last for the current workspace session. |
 | Movable panes | Freely split, move, tab or hide panels. Keep up to 20 named layouts, enlarge a pane temporarily, and adjust code size and spacing independently of the layout. |
-| Review alongside AI tools | See current-folder evidence gaps and next checks; copy a hunk request, verification request or handoff, and record task intent and results. |
+| Review alongside AI tools | Track stable completion criteria, link reports to individual criteria, record the code a reviewer says they examined, and read or pin repository verification guides. Copy hunk requests, verification requests and handoffs. |
 
-The app does not call AI models directly. Copy a request into Claude, Codex, Grok, or another tool you use. Results entered by an AI or a person are stored as **reports**, separately from checks the app actually ran. The task panel summarizes recent evidence for the current folder; criterion fulfillment is not inferred. [AI workflow direction and usage](docs/ai-workflow.md).
+The app does not call AI models directly. Copy a request into Claude, Codex, Grok, or another tool you use. Results entered by an AI or a person are stored as **reports**, separately from checks the app actually ran. The task panel summarizes recent evidence for the current folder; criterion fulfillment is not inferred. [Task workflow guide](docs/task-workflow.md) · [AI workflow direction](docs/ai-workflow.md).
 
 <details>
 <summary>Make the workspace your own</summary>
@@ -115,7 +115,7 @@ Settings, recent projects, and the task journal live in `~/Library/Application S
 - **Preparation and writes:** Working directories are prepared without changing the original checkout. A changed source snapshot or trust basis stops execution; there is no silent replanning or recovery through reset/clean. Recipes are not an OS security sandbox.
 - **Display and resources:** Graph and branch history show at most 80 recent commits. Diff display is capped at 5,000 lines and 512 KiB. Speed, memory, and energy use on large repositories have not been measured.
 - **Recovery and refresh:** Lost preparation responses leave an origin-project notice for the app session; check that project's task list and Git state before repeating work. These notices do not survive an app restart. Use Refresh after changing Git attributes or diff settings. A read already started in the engine may continue after the client cancels it.
-- **Distribution and validation:** The current prerelease DMG is for Apple Silicon. See its [release notes](docs/releases/v0.1.0-alpha.7.md) for signature and notarization status. Intel builds, runtime testing on macOS 14–26, OS-level input testing, and VoiceOver validation are not complete.
+- **Distribution and validation:** The current prerelease DMG is for Apple Silicon. See its [release notes](docs/releases/v0.1.0-alpha.8.md) for signature and notarization status. Intel builds, runtime testing on macOS 14–26, OS-level input testing, and VoiceOver validation are not complete.
 
 See [limitations and known issues (Korean)](docs/limitations.md) for details.
 
@@ -144,7 +144,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 swift test --package-path apps/macos
 ```
 
-On 2026-10-25, **190 Swift tests** passed in the developer checkout. Unchanged Python and Rust sources retain alpha.6’s **56 Python** and alpha.5’s **119 Rust** test validation. Synthetic CLI/native-protocol scenarios and read-only public GitHub/GitLab clone/fetch checks also passed. There is no CI yet. These results do not establish behavior on real user repositories or performance on large repositories.
+On 2026-10-25, **209 Swift tests** and **141 Rust tests** passed in the developer checkout; Rust formatting and Clippy checks passed. Unchanged Python sources retain alpha.6’s **56 Python** test validation. Native synthetic scenarios exercise the actual Rust service, criterion identity/history, report links, and explicit guide reading and pinning. Earlier read-only public GitHub/GitLab clone/fetch checks remain historical validation of unchanged remote code. There is no CI yet. These results do not establish behavior on real user repositories or performance on large repositories.
 
 Detailed guides are currently in Korean:
 

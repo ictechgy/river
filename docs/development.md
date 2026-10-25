@@ -121,6 +121,8 @@ schemas/               Rust 타입에서 생성한 공개 JSON Schema
 scripts/               빌드와 합성 검증 harness
 ```
 
+작업 조건의 안정 ID·보고 메타데이터·검증 문서는 [작업 흐름 안내](task-workflow.md)를 따릅니다. v1 영속 JSON은 그대로 두고 별도 테이블과 v2 RPC로 확장하며, `schemas/task-workflow.json`과 `schemas/verification-guide.json`도 Rust 타입에서 내보냅니다.
+
 스키마 재생성:
 
 ```sh

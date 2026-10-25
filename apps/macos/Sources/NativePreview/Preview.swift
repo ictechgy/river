@@ -390,86 +390,95 @@ struct NativePreview {
 
   @MainActor private static func verifyTaskContext(_ store: WorkbenchStore) async throws {
     guard let selection = store.selection, let opID = selection.opId, let initial = store.repository
-    else {
-      throw CocoaError(.validationMissingMandatoryProperty)
-    }
+    else { throw CocoaError(.validationMissingMandatoryProperty) }
     let client = ServiceClient(socketPath: store.socketPath)
     let model = store.taskContext
-    var values: [String: JSONValue] = [
-      "repo_id": .string(selection.repoId), "context_op_id": .string(opID),
-      "expected_revision": .number(0),
-      "purpose": .string("앱을 다시 열어도 로그인 상태가 이어지도록 세션 복원을 개선합니다."),
-      "criteria": .array([.string("재시작 후 세션이 복원된다"), .string("만료된 세션은 로그인 화면으로 돌아간다")]),
-      "references": .array([.string("docs/session-recovery.md")]),
-      "notes": .string("오프라인·만료 세션 테스트를 추가하고 API 저장소의 준비 실패를 확인해야 합니다."),
-    ]
-    let _: TaskContextBundle = try await client.call("save_task_context", params: values)
     await model.refresh()
-    guard model.bundle?.context.revision == 1 else {
+    guard let originalWorkflow = model.workflow, originalWorkflow.canWrite else {
       throw CocoaError(.validationMissingMandatoryProperty)
     }
+    let firstID = UUID().uuidString.lowercased(), secondID = UUID().uuidString.lowercased()
+    let guideID = UUID().uuidString.lowercased()
+    var values: [String: JSONValue] = [
+      "repo_id": .string(selection.repoId), "context_op_id": .string(opID),
+      "expected_context_revision": .number(Double(originalWorkflow.context.revision)),
+      "expected_workflow_revision": .number(Double(originalWorkflow.workflow.revision)),
+      "purpose": .string("앱을 다시 열어도 로그인 상태가 이어지도록 세션 복원을 개선합니다."),
+      "criteria": .array([
+        .object(["id": .string(firstID), "text": .string("재시작 후 세션이 복원된다")]),
+        .object(["id": .string(secondID), "text": .string("만료된 세션은 로그인 화면으로 돌아간다")]),
+      ]),
+      "references": .array([.string("docs/session-recovery.md")]),
+      "notes": .string("오프라인·만료 세션 테스트를 추가하고 API 저장소의 준비 실패를 확인해야 합니다."),
+      "guides": .array([.object(["id": .string(guideID), "repo_id": .string(selection.repoId),
+        "kind": .string("procedure"), "path": .string("README.md"), "expected_sha256": .null])]),
+    ]
+    let _: TaskWorkflowBundle = try await client.call("save_task_workflow", params: values)
+    await model.refresh()
+    guard model.bundle?.context.revision == 1,
+      let guide = await model.readGuide(id: guideID, at: model.identity), guide.status == "unread",
+      !guide.content.isEmpty, await model.pinGuide(guide, guideID: guideID, at: model.identity),
+      let pinned = await model.readGuide(id: guideID, at: model.identity), pinned.status == "matching"
+    else { throw CocoaError(.validationMissingMandatoryProperty) }
     await model.runCheck(snapshot: initial.snapshotHash, at: selection)
     guard model.bundle?.verifications.first?.kind == "git_check",
       model.bundle?.verifications.first?.verdict == "passed"
     else { throw CocoaError(.validationMissingMandatoryProperty) }
     let beforeCount = model.bundle?.verifications.count
-    let staleRecord = await model.record(
-      kind: "human_report", verdict: "passed", command: "", note: "must not save",
-      at: "obsolete-screen")
+    let staleRecord = await model.record(kind: "human_report", verdict: "passed", command: "", note: "must not save", at: "obsolete-screen")
     guard !staleRecord, model.bundle?.verifications.count == beforeCount else {
       throw CocoaError(.validationMissingMandatoryProperty)
     }
-    let recorded = await model.record(
-      kind: "ai_report", verdict: "passed", command: "swift test (AI report)",
-      note: "AI가 세션 테스트 통과를 보고했습니다. 앱은 실행을 관찰하지 않았습니다.", at: model.identity)
+    let recorded = await model.record(kind: "ai_report", verdict: "passed", command: "swift test (synthetic AI report)",
+      note: "합성 AI 보고입니다. 앱은 테스트 실행을 관찰하지 않았습니다.",
+      criterionIDs: [firstID], claimedReviewedState: .init(head: initial.snapshot.head, snapshotHash: initial.snapshotHash),
+      provider: "Synthetic fixture", model: "fixture-only", artifacts: ["evidence/session-test.log"],
+      reportStatus: "incomplete", at: model.identity)
     guard recorded, let report = model.bundle?.verifications.first, report.kind == "ai_report",
-      report.afterSnapshotHash == nil
+      report.afterSnapshotHash == nil, let metadata = model.workflow?.evidence.first,
+      metadata.criteria.first?.id == firstID, metadata.criteria.first?.revision == 1,
+      metadata.reportStatus == "incomplete", metadata.claimedReviewedState?.snapshotHash == initial.snapshotHash
     else { throw CocoaError(.validationMissingMandatoryProperty) }
     let file = URL(fileURLWithPath: initial.path).appendingPathComponent("Sources/Session.swift")
     let original = try String(contentsOf: file, encoding: .utf8)
-    try (original + "// whitespace fixture   \n").write(
-      to: file, atomically: false, encoding: .utf8)
+    try (original + "// whitespace fixture   \n").write(to: file, atomically: false, encoding: .utf8)
     await store.refresh()
     guard let changed = store.repository, changed.snapshotHash != initial.snapshotHash,
-      changed.snapshot.head == initial.snapshot.head,
-      changed.snapshot.indexHash == initial.snapshot.indexHash,
-      report.freshness(
-        repoId: selection.repoId, opId: selection.opId, snapshot: changed.snapshotHash,
-        requirements: model.bundle?.context.requirementsHash
-      ).contains("이전 코드")
+      changed.snapshot.head == initial.snapshot.head, changed.snapshot.indexHash == initial.snapshot.indexHash
     else { throw CocoaError(.validationMissingMandatoryProperty) }
     await model.runCheck(snapshot: changed.snapshotHash, at: selection)
-    guard model.bundle?.verifications.first?.verdict == "failed" else {
+    guard model.bundle?.verifications.first?.verdict == "failed", let current = model.workflow else {
       throw CocoaError(.validationMissingMandatoryProperty)
     }
-    values["expected_revision"] = .number(1)
+    values["expected_context_revision"] = .number(Double(current.context.revision))
+    values["expected_workflow_revision"] = .number(Double(current.workflow.revision))
     values["criteria"] = .array([
-      .string("재시작 후 세션이 복원된다"), .string("만료된 세션은 로그인 화면으로 돌아간다"), .string("오프라인에서도 저장된 세션을 복원한다"),
+      .object(["id": .string(secondID), "text": .string("만료된 세션은 로그인 화면으로 돌아간다")]),
+      .object(["id": .string(firstID), "text": .string("오프라인에서도 재시작 후 세션이 복원된다")]),
     ])
-    let _: TaskContextBundle = try await client.call("save_task_context", params: values)
+    values["guides"] = .array([.object(["id": .string(guideID), "repo_id": .string(selection.repoId),
+      "kind": .string("procedure"), "path": .string("README.md"), "expected_sha256": .string(guide.sha256)])])
+    let _: TaskWorkflowBundle = try await client.call("save_task_workflow", params: values)
     await model.refresh()
-    guard let receipt = model.bundle?.verifications.first,
-      receipt.freshness(
-        repoId: selection.repoId, opId: selection.opId, snapshot: changed.snapshotHash,
-        requirements: model.bundle?.context.requirementsHash
-      ).contains("완료 조건 변경"),
-      let handoff = await model.handoff(), handoff.contains("### \"api\""),
-      handoff.contains("### \"ios-app\""),
-      handoff.contains("AI가 보고한 결과"), handoff.contains("오프라인에서도"),
-      handoff.contains("통합 검증/승인을 뜻하지 않습니다")
+    guard let updated = model.workflow, updated.workflow.criteria.first?.id == secondID,
+      updated.workflow.criteria.first?.revision == 1, updated.workflow.criteria.last?.id == firstID,
+      updated.workflow.criteria.last?.revision == 2,
+      updated.evidence.first?.criteria.first?.revision == 1,
+      let handoff = await model.handoff(), handoff.contains("### \"api\""), handoff.contains("### \"ios-app\""),
+      handoff.contains("오프라인에서도"), handoff.contains("보고자가 검토했다고 주장한"),
+      handoff.contains("보고 미완료"), handoff.contains("기준 SHA-256"),
+      !handoff.contains(guide.content), handoff.contains("통합 검증/승인을 뜻하지 않습니다")
     else { throw CocoaError(.validationMissingMandatoryProperty) }
-    try handoff.write(
-      to: URL(fileURLWithPath: CommandLine.arguments[2]).deletingPathExtension()
-        .appendingPathExtension("handoff.txt"), atomically: true, encoding: .utf8)
+    try handoff.write(to: URL(fileURLWithPath: CommandLine.arguments[2]).deletingPathExtension().appendingPathExtension("handoff.txt"), atomically: true, encoding: .utf8)
+    let revision = model.bundle?.context.revision
     await store.connect()
-    guard store.taskContext.bundle?.context.revision == 2,
+    guard store.taskContext.bundle?.context.revision == revision,
       store.taskContext.bundle?.verifications.count == 3,
+      store.taskContext.workflow?.workflow.criteria.last?.id == firstID,
       store.repository?.snapshot.head == initial.snapshot.head,
       store.repository?.snapshot.indexHash == initial.snapshot.indexHash
     else { throw CocoaError(.validationMissingMandatoryProperty) }
-    print(
-      "Verified task context persistence/reconnect, observed vs AI report, stale screen guard, code/criteria freshness, failed whitespace check, multi-repo handoff and unchanged HEAD/index"
-    )
+    print("Verified stable criterion IDs/revisions/reorder, linked incomplete report, separate claimed basis, explicit guide read/pin, persistence/reconnect, failed whitespace check, multi-repo handoff without guide content and unchanged HEAD/index")
   }
 
   @MainActor private static func verifyReviewContinuity(

@@ -2436,7 +2436,7 @@ private func requestObservationSection(_ text: String, heading: String) throws -
   #expect(!draft.contains("검증 요약: 현재 공백·충돌 검사 통과"))
   #expect(draft.contains("수집 중 작업 정보가 변경되었습니다"))
   #expect(draft.contains("revision 2 기준"))
-  #expect(draft.contains("River가 개별 조건과 증거를 연결하거나 충족 여부를 판단한 결과가 아닙니다"))
+  #expect(draft.contains("조건 충족이나 실행을 River가 인증한 결과가 아닙니다"))
   #expect(!model.isDirty)
 }
 
@@ -2463,4 +2463,241 @@ private func requestObservationSection(_ text: String, heading: String) throws -
   #expect(!model.isDirty)
   #expect(!model.working)
   #expect(model.inFlightWorkCount == 0)
+}
+
+// Workflow v2 service fixture. Existing fixtures intentionally retain the legacy response.
+private final class WorkflowReplies: @unchecked Sendable {
+  let lock = NSLock()
+  let legacy = Replies()
+  var capability = true
+  var compatibility = "current"
+  var contextRevision = 1
+  var workflowRevision = 1
+  var purpose = "Saved purpose"
+  var criteria: [[String: Any]] = [
+    ["id": "22222222-2222-4222-8222-222222222222", "revision": 1, "text": "Duplicate"],
+    ["id": "33333333-3333-4333-8333-333333333333", "revision": 1, "text": "Duplicate"],
+  ]
+  var guides: [[String: Any]] = []
+  var receipts: [[String: Any]] = []
+  var evidence: [[String: Any]] = []
+  var requests: [(method: String, params: [String: Any])] = []
+  var saveFailure: String?
+  var dropSaveReply = false
+  var holdStatus = false
+  let arrived = Flag()
+  let gate = DispatchSemaphore(value: 0)
+  private func context() -> [String: Any] {
+    ["revision": contextRevision, "purpose": purpose, "criteria": criteria.map { $0["text"] as? String ?? "" },
+      "references": [], "notes": "", "requirements_hash": "goal-\(contextRevision)"]
+  }
+  private func bundle() -> [String: Any] {
+    ["version": 2, "compatibility": compatibility, "context": context(), "verifications": receipts,
+      "workflow": ["revision": workflowRevision, "context_revision": contextRevision, "intent_hash": "intent",
+        "criteria": criteria, "guides": guides, "retired_count": 0], "evidence": evidence, "history": []]
+  }
+  func respond(_ request: [String: Any]) -> [String: Any]? {
+    let method = request["method"] as? String ?? ""
+    let p = request["params"] as? [String: Any] ?? [:]
+    let hold = lock.withLock {
+      requests.append((method, p))
+      if method == "get_repo_status", holdStatus { holdStatus = false; return true }
+      return false
+    }
+    if hold { arrived.value = true; _ = gate.wait(timeout: .now() + .seconds(5)) }
+    switch method {
+    case "get_task_context", "get_task_workflow", "save_task_workflow", "record_workflow_report", "reset_task_workflow", "read_verification_guide":
+      return lock.withLock {
+        var result: [String: Any]
+        switch method {
+        case "get_task_context":
+          result = ["context": context(), "verifications": receipts]
+          if capability { result["workflow_version"] = 2 }
+        case "get_task_workflow": result = bundle()
+        case "save_task_workflow":
+          if dropSaveReply { return nil }
+          if let saveFailure { return ["schema_version": 1, "error": ["code": saveFailure, "message": "synthetic stale write"]] }
+          let old = criteria
+          criteria = (p["criteria"] as? [[String: Any]] ?? []).map { entry in
+            let previous = old.first { ($0["id"] as? String) == (entry["id"] as? String) }
+            let revision = previous?["revision"] as? Int ?? 0
+            return ["id": entry["id"] as? String ?? "", "text": entry["text"] as? String ?? "",
+              "revision": previous?["text"] as? String == entry["text"] as? String ? max(1, revision) : revision + 1]
+          }
+          guides = p["guides"] as? [[String: Any]] ?? []
+          purpose = p["purpose"] as? String ?? ""
+          contextRevision += 1; workflowRevision += 1
+          result = bundle()
+        case "record_workflow_report":
+          var receipt = requestReceiptJSON(id: "workflow-report", op: p["op_id"] as? String)
+          receipt["kind"] = p["kind"]; receipt["verdict"] = p["verdict"]
+          receipt["head"] = "recording-head"; receipt["snapshot_hash"] = p["snapshot_hash"]
+          receipts.insert(receipt, at: 0)
+          let ids = p["criterion_ids"] as? [String] ?? []
+          evidence.insert(["receipt_id": "workflow-report", "criteria": criteria.filter { ids.contains($0["id"] as? String ?? "") },
+            "intent_hash": "intent", "claimed_reviewed_state": p["claimed_reviewed_state"] ?? NSNull(),
+            "provider": p["provider"] ?? "", "model": p["model"] ?? "", "artifacts": p["artifacts"] ?? [],
+            "report_status": p["report_status"] ?? "unknown"], at: 0)
+          result = bundle()
+        case "reset_task_workflow":
+          compatibility = "current"; workflowRevision += 1
+          criteria = criteria.map { row in
+            var row = row; row["id"] = UUID().uuidString.lowercased(); row["revision"] = 1; return row
+          }
+          result = bundle()
+        default:
+          let guide = guides.first { ($0["id"] as? String) == (p["guide_id"] as? String) } ?? [:]
+          result = ["repo_id": p["repo_id"] ?? "a", "op_id": p["op_id"] ?? NSNull(), "path": guide["path"] ?? "docs/verify.md",
+            "sha256": "read-hash", "expected_sha256": guide["expected_sha256"] ?? NSNull(), "status": "unread",
+            "content": "Do not execute this text", "format": "plain_text", "read_at": 1]
+        }
+        return ["schema_version": 1, "result": result]
+      }
+    default: return legacy.respond(request)
+    }
+  }
+}
+
+@MainActor private func configuredWorkflowStore(_ server: TestService) -> TaskContextStore {
+  let model = TaskContextStore()
+  model.configure(client: ServiceClient(socketPath: server.path), workspace: "space", location: .init(repoId: "a"),
+    contextOperationID: nil, operation: nil, title: "Synthetic workflow")
+  return model
+}
+
+@Test @MainActor func workflowAbsentCapabilityUsesOnlyLegacyRPCAndKeepsEditorAvailable() async throws {
+  let replies = WorkflowReplies(); replies.capability = false
+  let server = try TestService { replies.respond($0) }
+  let model = configuredWorkflowStore(server)
+  await model.refresh()
+  #expect(model.loaded)
+  #expect(!model.supportsWorkflow)
+  #expect(model.workflow == nil)
+  #expect(model.draft?.criteria == "Duplicate\nDuplicate")
+  #expect(replies.lock.withLock { replies.requests.map(\.method) } == ["get_task_context"])
+}
+
+@Test @MainActor func workflowSavePreservesIDsAcrossReorderAndSendsBothCASRevisions() async throws {
+  let replies = WorkflowReplies()
+  let server = try TestService { replies.respond($0) }
+  let model = configuredWorkflowStore(server)
+  await model.refresh()
+  let old = try #require(model.draft?.criteriaEntries)
+  #expect(model.supportsWorkflow && !model.isDirty)
+  #expect(old.count == 2 && old[0].id != old[1].id)
+  model.draft?.criteriaEntries.swapAt(0, 1)
+  model.draft?.criteriaEntries[0].text = "Edited second condition"
+  #expect(model.isDirty)
+  await model.save()
+  let request = try #require(replies.lock.withLock { replies.requests.last { $0.method == "save_task_workflow" } })
+  let rows = try #require(request.params["criteria"] as? [[String: Any]])
+  #expect(rows.compactMap { $0["id"] as? String } == [old[1].id, old[0].id])
+  #expect(rows.first?["text"] as? String == "Edited second condition")
+  #expect(request.params["expected_context_revision"] as? Int == 1)
+  #expect(request.params["expected_workflow_revision"] as? Int == 1)
+  #expect(request.params["expected_revision"] == nil)
+  #expect(model.draft?.revision == 2 && model.draft?.workflowRevision == 2)
+  #expect(model.workflow?.workflow.criteria.first?.revision == 2)
+  #expect(!model.isDirty)
+  #expect(!replies.lock.withLock { replies.requests.contains { $0.method == "save_task_context" } })
+}
+
+@Test @MainActor func workflowStaleAndUncertainSaveRetainIdentityAndDraftWithoutReplay() async throws {
+  for transportFailure in [false, true] {
+    let replies = WorkflowReplies()
+    let server = try TestService { replies.respond($0) }
+    let model = configuredWorkflowStore(server)
+    await model.refresh()
+    let id = model.draft?.criteriaEntries.first?.id
+    model.draft?.criteriaEntries[0].text = "Unsaved intent"
+    replies.lock.withLock { replies.saveFailure = transportFailure ? nil : "workflow_conflict"; replies.dropSaveReply = transportFailure }
+    await model.save()
+    #expect(model.isDirty)
+    #expect(model.draft?.criteriaEntries.first?.id == id)
+    #expect(model.draft?.criteriaEntries.first?.text == "Unsaved intent")
+    #expect(model.draft?.revision == 1 && model.draft?.workflowRevision == 1)
+    #expect(model.message != nil)
+    #expect(replies.lock.withLock { replies.requests.filter { $0.method == "save_task_workflow" }.count } == 1)
+    #expect(model.inFlightWorkCount == 0 && !model.working)
+    #expect(model.updateUncertainWriteOrigins.isEmpty == !transportFailure)
+  }
+}
+
+@Test @MainActor func workflowReportKeepsUnknownClaimSeparateFromRecordingObservation() async throws {
+  let replies = WorkflowReplies()
+  let server = try TestService { replies.respond($0) }
+  let model = configuredWorkflowStore(server)
+  await model.refresh()
+  let id = try #require(model.draft?.criteriaEntries.first?.id)
+  let recorded = await model.record(kind: "ai_report", verdict: "passed", command: "test", note: "Reported result",
+    criterionIDs: [id], provider: "provider", model: "exact-model", artifacts: ["logs/test.txt"], reportStatus: "tool_error", at: model.identity)
+  #expect(recorded)
+  let request = try #require(replies.lock.withLock { replies.requests.last { $0.method == "record_workflow_report" } })
+  #expect(request.params["claimed_reviewed_state"] is NSNull)
+  #expect(request.params["snapshot_hash"] as? String == "code")
+  #expect(request.params["criterion_ids"] as? [String] == [id])
+  #expect(request.params["report_status"] as? String == "tool_error")
+  #expect(model.workflow?.evidence.first?.claimedReviewedState == nil)
+  #expect(model.workflow?.verifications.first?.head == "recording-head")
+  #expect(model.workflow?.evidence.first?.reportStatus == "tool_error")
+  #expect(model.workflow?.evidence.first?.provider == "provider")
+  #expect(model.workflow?.evidence.first?.artifacts == ["logs/test.txt"])
+}
+
+@Test @MainActor func workflowNavigationDuringRecordingStatusReadNeverSubmitsOriginReport() async throws {
+  let replies = WorkflowReplies()
+  let server = try TestService { replies.respond($0) }
+  let model = configuredWorkflowStore(server)
+  await model.refresh()
+  replies.lock.withLock { replies.holdStatus = true }
+  let identity = model.identity
+  let recording = Task { await model.record(kind: "ai_report", verdict: "unknown", command: "", note: "Origin only", at: identity) }
+  try await wait(replies.arrived)
+  model.configure(client: ServiceClient(socketPath: server.path), workspace: "space", location: .init(repoId: "b"),
+    contextOperationID: nil, operation: nil, title: "Destination")
+  await model.refresh()
+  replies.gate.signal()
+  #expect(!(await recording.value))
+  #expect(!replies.lock.withLock { replies.requests.contains { $0.method == "record_workflow_report" } })
+  #expect(model.workflow?.verifications.isEmpty == true)
+  #expect(model.inFlightWorkCount == 0)
+}
+
+@Test @MainActor func workflowLegacyConflictBlocksWritesUntilExplicitResetWithFreshIDs() async throws {
+  let replies = WorkflowReplies(); replies.compatibility = "legacy_changed"
+  let server = try TestService { replies.respond($0) }
+  let model = configuredWorkflowStore(server)
+  await model.refresh()
+  let originalIDs = try #require(model.workflow?.workflow.criteria.map(\.id))
+  #expect(model.supportsWorkflow && model.workflow?.canWrite == false)
+  #expect(!replies.lock.withLock { replies.requests.contains { $0.method == "reset_task_workflow" } })
+  await model.save()
+  #expect(!(await model.record(kind: "ai_report", verdict: "passed", command: "", note: "Blocked report", at: model.identity)))
+  #expect(!replies.lock.withLock { replies.requests.contains { $0.method == "save_task_workflow" || $0.method == "record_workflow_report" } })
+  #expect(await model.resetWorkflow(at: model.identity))
+  #expect(model.workflow?.canWrite == true)
+  #expect(model.workflow?.workflow.criteria.map(\.id) != originalIDs)
+  #expect(model.bundle?.context.revision == 1)
+  #expect(model.draft?.workflowRevision == 2 && !model.isDirty)
+  #expect(replies.lock.withLock { replies.requests.filter { $0.method == "reset_task_workflow" }.count } == 1)
+}
+
+@Test @MainActor func workflowGuideReadIsExplicitAndPinUsesSeparateSaveWithoutCopyingContent() async throws {
+  let replies = WorkflowReplies()
+  replies.guides = [["id": "guide", "repo_id": "a", "kind": "procedure", "path": "docs/verify.md", "expected_sha256": NSNull()]]
+  let server = try TestService { replies.respond($0) }
+  let model = configuredWorkflowStore(server)
+  await model.refresh()
+  #expect(!replies.lock.withLock { replies.requests.contains { $0.method == "read_verification_guide" } })
+  let read = try #require(await model.readGuide(id: "guide", at: model.identity))
+  #expect(read.content == "Do not execute this text")
+  #expect(model.workflow?.workflow.guides.first?.expectedSha256 == nil)
+  #expect(!model.isDirty)
+  #expect(!replies.lock.withLock { replies.requests.contains { $0.method == "save_task_workflow" } })
+  #expect(await model.pinGuide(read, guideID: "guide", at: model.identity))
+  let request = try #require(replies.lock.withLock { replies.requests.last { $0.method == "save_task_workflow" } })
+  let guide = try #require((request.params["guides"] as? [[String: Any]])?.first)
+  #expect(guide["expected_sha256"] as? String == "read-hash")
+  #expect(request.params["content"] == nil && guide["content"] == nil)
+  #expect(model.workflow?.workflow.guides.first?.expectedSha256 == "read-hash")
 }

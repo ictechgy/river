@@ -62,6 +62,14 @@ printf '{"method":"execute_plan","params":{"plan_id":"%s","idempotency_key":"log
 
 CLI는 성공 시 0, 명령 실패 시 1(오류 JSON은 stderr)로 끝납니다. `rpc`가 서비스 오류 응답을 받으면 2입니다. Unix 소켓은 짧은 사용자 소유 전용 경로에 두세요. 앱은 이 경로를 자동으로 관리합니다.
 
+## 작업 조건·보고·검증 문서
+
+새 Task context 응답의 `workflow_version: 2`는 확장 기능 지원 표시입니다. `get_task_workflow`로 현재 조건 ID·개정·보고 연결을 읽고, `save_task_workflow`로 목적·조건·참고·검증 문서 목록을 저장합니다. 저장에는 조회한 `expected_context_revision`과 `expected_workflow_revision`이 모두 필요합니다.
+
+`record_workflow_report`는 선택한 `criterion_ids`, `claimed_reviewed_state`, `provider`, `model`, `artifacts`, `report_status`를 기록합니다. 기록 시 관찰한 코드와 보고자가 검토했다고 밝힌 코드를 구분하며, 완료 조건 충족을 판정하지 않습니다. `read_verification_guide`는 선택한 저장소·폴더의 등록 문서 하나를 명시적으로 읽습니다. 호출 필드와 응답 타입은 [Task workflow 스키마](../schemas/task-workflow.json), [문서 읽기 스키마](../schemas/verification-guide.json) 및 [사용 안내](task-workflow.md)를 참고하세요. 전송 envelope의 버전은 계속 1입니다.
+
+확장 기록 생성 후 구형 `save_task_context`는 거부합니다. 구형 엔진이 기존 기록을 변경한 경우 `legacy_changed`로 표시하며 자동으로 조건을 재연결하지 않습니다. 두 개정 번호를 확인한 명시적 `reset_task_workflow`만 현재 텍스트로 새 ID를 만들고 과거 이력을 보존합니다.
+
 ## 구성 파일
 
 `fixture`가 만든 `workspace.json`과 [공개 스키마](../schemas/workspace.json)를 함께 읽으면 저장소·그룹·recipe 구성을 확인할 수 있습니다. 실제 저장소의 초기 등록은 아래 명령을 사용하며 JSON을 지정한 새 경로에 작성합니다.

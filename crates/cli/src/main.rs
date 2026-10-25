@@ -95,6 +95,11 @@ fn run() -> Result<()> {
             );
             schema!("ios-version-inputs", workbench_domain::IosInputs);
             schema!("task-context", workbench_domain::TaskContextBundle);
+            schema!("task-workflow", workbench_domain::TaskWorkflowBundle);
+            schema!(
+                "verification-guide",
+                workbench_domain::VerificationGuideContents
+            );
             schema!("remote-state", workbench_domain::RemoteState);
             schema!(
                 "remote-mutation-result",

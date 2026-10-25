@@ -75,6 +75,8 @@ pub struct VerificationReceipt {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TaskContextBundle {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_version: Option<u32>,
     pub context: TaskContext,
     pub verifications: Vec<VerificationReceipt>,
 }

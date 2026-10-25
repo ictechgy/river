@@ -12,9 +12,11 @@ struct TaskContextView: View {
   @State private var handoffText: String?
   @State private var handoffIdentity: String?
   @State private var handoffPurpose: TaskRequestPurpose = .handoff
+  @State private var confirmingWorkflowReset = false
   private var canRecord: Bool {
     model.loaded && !model.working && !model.isDirty && !store.busy
       && !store.validatingSelection && store.repository != nil && !store.hasRunningOperation
+      && (model.bundle?.workflowVersion != 2 || model.workflow?.canWrite == true)
   }
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
@@ -31,6 +33,11 @@ struct TaskContextView: View {
         Text(c.purpose.isEmpty ? "어떤 문제를 해결할 작업인가요?" : c.purpose)
           .font(.system(size: 13)).foregroundStyle(c.purpose.isEmpty ? .secondary : .primary)
           .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+        if let workflow = model.workflow, workflow.canWrite {
+          WorkflowCriteriaView(bundle: workflow, repoID: store.selection?.repoId, opID: store.selection?.opId,
+            head: !model.loaded || store.validatingSelection || store.selectionCheckFailed ? nil : store.repository?.snapshot.head,
+            snapshot: !model.loaded || store.validatingSelection || store.selectionCheckFailed ? nil : store.repository?.snapshotHash)
+        } else {
         VStack(alignment: .leading, spacing: 8) {
           Text("완료 조건").font(.system(size: 12, weight: .semibold))
           if c.criteria.isEmpty {
@@ -44,6 +51,12 @@ struct TaskContextView: View {
             }
           }
         }.font(.system(size: 12))
+        if let previous = model.workflow, !previous.canWrite {
+          DisclosureGroup("이전 조건 연결 이력 · 현재 조건으로 적용하지 않음") {
+            WorkflowCriteriaView(bundle: previous, repoID: nil, opID: nil, head: nil, snapshot: nil)
+          }.font(.system(size: 12))
+        }
+        }
         if !c.notes.isEmpty {
           DisclosureGroup("남은 일 · 주의할 점") {
             Text(c.notes).font(.system(size: 12)).textSelection(.enabled).padding(.top, 6)
@@ -59,6 +72,25 @@ struct TaskContextView: View {
       } else if !model.loaded && model.message == nil {
         ProgressView("작업 정보 읽는 중…").controlSize(.small)
       }
+      if model.loaded && model.bundle?.workflowVersion == nil {
+        Text("현재 엔진에서는 조건별 연결·검토 상태·검증 절차를 기록할 수 없습니다. 기존 작성·기록은 사용할 수 있으며, 엔진을 업데이트하고 다시 연결하면 새 기능을 사용할 수 있습니다.")
+          .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+      }
+      if let workflow = model.workflow, !workflow.canWrite {
+        VStack(alignment: .leading, spacing: 6) {
+          Text("이전 엔진에서 작업 정보가 바뀌었습니다. 조건 연결을 추정하지 않으며, 새 기록은 잠시 중지합니다.")
+            .font(.system(size: 12)).foregroundStyle(WorkbenchTheme.warning)
+          Button("현재 작성본으로 조건 ID 새로 만들기…") { confirmingWorkflowReset = true }
+            .disabled(model.working || model.isDirty)
+          Text(model.isDirty ? "작성 중인 입력은 ‘이어서 작성’에서 복사한 뒤 현재 저장본을 불러오세요." : "기존 검증·연결 이력은 유지되고 현재 조건에는 새 ID를 부여합니다.")
+            .font(.system(size: 11)).foregroundStyle(.secondary)
+        }
+      }
+      if let workflowMessage = model.workflowMessage {
+        Text(workflowMessage).font(.system(size: 11)).foregroundStyle(WorkbenchTheme.warning)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      WorkflowGuidesView(model: model, selectedRepoID: store.selection?.repoId)
       if model.isDirty {
         Text("저장하지 않은 작성 내용이 있습니다. 검증·인수인계 전에 저장해 주세요.")
           .font(.system(size: 11)).foregroundStyle(WorkbenchTheme.warning)
@@ -89,6 +121,14 @@ struct TaskContextView: View {
               Text(summary.reportsDescription).font(.system(size: 11)).foregroundStyle(.secondary)
             }
           }.fixedSize(horizontal: false, vertical: true)
+        }
+        if let workflow = model.workflow {
+          let warnings = WorkflowEvidencePresentation.visibleWarnings(workflow)
+          if !warnings.isEmpty {
+            Text("최근 50개 안의 기록: " + warnings.joined(separator: " · "))
+              .font(.system(size: 11)).foregroundStyle(WorkbenchTheme.warning)
+              .fixedSize(horizontal: false, vertical: true)
+          }
         }
         Button("공백 · 충돌 마커 검사", systemImage: "play.circle") {
           guard let snapshot = store.repository?.snapshotHash, let location = store.selection else { return }
@@ -134,8 +174,17 @@ struct TaskContextView: View {
       HandoffEditor(text: Binding(get: { handoffText ?? "" }, set: { handoffText = $0 }),
         title: handoffPurpose.draftTitle, canCopy: { handoffIdentity == model.identity && model.loaded })
     }
+    .confirmationDialog("현재 조건에 새 ID를 부여할까요?", isPresented: $confirmingWorkflowReset) {
+      Button("새 ID로 다시 시작") {
+        let identity = model.identity
+        Task { _ = await model.resetWorkflow(at: identity) }
+      }
+      Button("취소", role: .cancel) {}
+    } message: {
+      Text("이전 엔진이 바꾼 작성본을 기준으로 새 조건 ID를 만듭니다. 과거 보고·조건 연결은 보존되며 자동으로 새 조건에 연결하지 않습니다. 저장하지 않은 입력은 먼저 복사해 두세요.")
+    }
     .onChange(of: model.identity) { _, _ in
-      editing = false; reporting = false; handoffText = nil; handoffIdentity = nil
+      editing = false; reporting = false; handoffText = nil; handoffIdentity = nil; confirmingWorkflowReset = false
     }
   }
   private func collectDraft(_ purpose: TaskRequestPurpose) {
@@ -149,7 +198,18 @@ struct TaskContextView: View {
     DisclosureGroup {
       VStack(alignment: .leading, spacing: 6) {
         Text("\(r.repoId) · \(r.path)")
-        Text("HEAD \(r.head.prefix(12)) · 상태 \(r.snapshotHash.prefix(12))")
+        Text("앱이 기록할 때 관찰한 HEAD \(r.head.prefix(12)) · 변경 상태 \(r.snapshotHash.prefix(12))")
+        if let evidence = model.workflow?.evidence.first(where: { $0.receiptId == r.id }) {
+          Text("보고자가 검토했다고 적은 HEAD: \(evidence.claimedReviewedState?.head ?? "미기재")")
+          Text("보고자가 검토했다고 적은 변경 상태: \(evidence.claimedReviewedState?.snapshotHash ?? "미기재")")
+          Text("제공자: \(evidence.provider.isEmpty ? "미기재" : evidence.provider) · 모델: \(evidence.model.isEmpty ? "미기재" : evidence.model)")
+          ForEach(evidence.criteria) { criterion in
+            Text("연결 조건 \(criterion.id) · 버전 \(criterion.revision): \(criterion.text)")
+          }
+          ForEach(Array(evidence.artifacts.enumerated()), id: \.offset) { _, artifact in
+            Text("근거 위치 (내용 미조회): \(artifact)").textSelection(.enabled)
+          }
+        }
         Text(r.command).textSelection(.enabled)
         Text(r.note).textSelection(.enabled)
         if !r.output.isEmpty { Text(String(r.output.prefix(8_000))).font(.system(size: 10, design: .monospaced)).textSelection(.enabled) }
@@ -170,6 +230,18 @@ struct TaskContextView: View {
         Text(r.freshness(repoId: store.selection?.repoId, opId: store.selection?.opId,
           snapshot: store.validatingSelection ? nil : store.repository?.snapshotHash, requirements: requirements))
           .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        if let workflow = model.workflow {
+          let presentation = WorkflowEvidencePresentation(receipt: r,
+            evidence: workflow.evidence.first { $0.receiptId == r.id }, workflow: workflow.workflow,
+            repoID: store.selection?.repoId, opID: store.selection?.opId,
+            head: store.validatingSelection ? nil : store.repository?.snapshot.head,
+            snapshot: store.validatingSelection ? nil : store.repository?.snapshotHash)
+          Text(presentation.labels.joined(separator: " · ")).font(.system(size: 11)).foregroundStyle(.secondary)
+          if !presentation.warnings.isEmpty {
+            Text(presentation.warnings.joined(separator: " · ")).font(.system(size: 11))
+              .foregroundStyle(WorkbenchTheme.warning).fixedSize(horizontal: false, vertical: true)
+          }
+        }
         (Text(Date(timeIntervalSince1970: r.finishedAt), style: .relative) + Text(" 전"))
           .font(.system(size: 11)).foregroundStyle(.secondary)
       }
@@ -187,26 +259,43 @@ private struct ContextEditor: View {
   private func binding(_ key: WritableKeyPath<ContextDraft, String>) -> Binding<String> {
     Binding(get: { model.draft?[keyPath: key] ?? "" }, set: { if identity == model.identity { model.draft?[keyPath: key] = $0 } })
   }
+  private var criteriaBinding: Binding<[WorkflowCriterionDraft]> {
+    Binding(get: { model.draft?.criteriaEntries ?? [] }, set: { if identity == model.identity { model.draft?.criteriaEntries = $0 } })
+  }
+  private var guidesBinding: Binding<[WorkflowGuideReference]> {
+    Binding(get: { model.draft?.guides ?? [] }, set: { if identity == model.identity { model.draft?.guides = $0 } })
+  }
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
       Text("작업 목적 · 완료 조건").font(.headline)
-      Text("목적").font(.subheadline)
-      TextField("해결할 문제와 원하는 결과", text: binding(\.purpose), axis: .vertical).lineLimit(2...4)
-      editor("완료 조건 · 한 줄에 하나씩", key: \.criteria, height: 100)
-      editor("남은 일 · 주의할 점", key: \.notes, height: 85)
-      editor("참고 경로 / 링크 · 한 줄에 하나씩 (내용은 자동으로 읽지 않습니다)", key: \.references, height: 55)
+      ScrollView {
+        VStack(alignment: .leading, spacing: 14) {
+          Text("목적").font(.subheadline)
+          TextField("해결할 문제와 원하는 결과", text: binding(\.purpose), axis: .vertical).lineLimit(2...4)
+          if model.supportsWorkflow {
+            WorkflowCriterionEditor(entries: criteriaBinding)
+          } else { editor("완료 조건 · 한 줄에 하나씩", key: \.criteria, height: 100) }
+          editor("남은 일 · 주의할 점", key: \.notes, height: 85)
+          editor("참고 경로 / 링크 · 한 줄에 하나씩 (내용은 자동으로 읽지 않습니다)", key: \.references, height: 55)
+          if model.supportsWorkflow {
+            WorkflowGuideEditor(guides: guidesBinding, repositoryIDs: model.guideRepositoryIDs)
+          }
+        }.padding(.trailing, 8)
+      }
       if let message = model.message { Text(message).font(.caption).foregroundStyle(.secondary) }
       HStack {
-        if model.draft?.revision != model.bundle?.context.revision {
+        if model.isDirty || model.draft?.revision != model.bundle?.context.revision
+          || (model.supportsWorkflow && model.draft?.workflowRevision != model.workflow?.workflow.revision) {
           Button("현재 저장본 불러오기") { if identity == model.identity { model.reloadDraft() } }
-          Text("다른 저장본이 있습니다. 입력을 먼저 복사해 두세요.").font(.caption).foregroundStyle(WorkbenchTheme.warning)
+          Text("입력을 보관하려면 먼저 복사해 두세요.").font(.caption).foregroundStyle(WorkbenchTheme.warning)
         }
         Spacer()
         Button("닫기") { dismiss() }.keyboardShortcut(.cancelAction)
         Button("저장") { Task { guard identity == model.identity else { return }; await model.save(); if !model.isDirty { dismiss() } } }
-          .keyboardShortcut(.defaultAction).disabled(!model.isDirty || !model.loaded)
+          .keyboardShortcut(.defaultAction).disabled(!model.isDirty || !model.loaded
+            || (model.bundle?.workflowVersion == 2 && model.workflow?.canWrite != true))
       }
-    }.padding(24).frame(width: 620).disabled(model.working || identity != model.identity)
+    }.padding(24).frame(width: 720, height: 660).disabled(model.working || identity != model.identity)
   }
   private func editor(_ label: String, key: WritableKeyPath<ContextDraft, String>, height: CGFloat) -> some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -225,31 +314,93 @@ private struct VerificationReportEditor: View {
   @State private var verdict = "unknown"
   @State private var command = ""
   @State private var note = ""
+  @State private var criterionIDs: Set<String> = []
+  @State private var claimedHead = ""
+  @State private var claimedSnapshot = ""
+  @State private var provider = ""
+  @State private var providerModel = ""
+  @State private var artifacts = ""
+  @State private var reportStatus = "unknown"
+  private var claimedState: WorkflowClaimedState? {
+    let head = claimedHead.trimmingCharacters(in: .whitespacesAndNewlines)
+    let snapshot = claimedSnapshot.trimmingCharacters(in: .whitespacesAndNewlines)
+    return head.isEmpty && snapshot.isEmpty ? nil : WorkflowClaimedState(
+      head: head.isEmpty ? nil : head, snapshotHash: snapshot.isEmpty ? nil : snapshot)
+  }
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       Text("검증 결과 기록").font(.headline)
-      Picker("출처", selection: $kind) {
-        Text("직접 적은 결과").tag("human_report")
-        Text("AI가 보고한 결과").tag("ai_report")
-      }.pickerStyle(.segmented)
-      Text("앱이 실행을 관찰한 검증과 구분해 저장합니다. 아래 명령은 실행되지 않습니다.")
-        .font(.caption).foregroundStyle(.secondary)
-      TextField("검증 항목 / 실행했다고 보고한 명령 (선택)", text: $command)
-      Picker("보고된 결과", selection: $verdict) {
-        Text("확인 필요").tag("unknown"); Text("통과").tag("passed"); Text("실패").tag("failed")
+      ScrollView {
+        VStack(alignment: .leading, spacing: 14) {
+          Picker("출처", selection: $kind) {
+            Text("직접 적은 결과").tag("human_report")
+            Text("AI가 보고한 결과").tag("ai_report")
+          }.pickerStyle(.segmented)
+          Text("앱이 실행을 관찰한 검증과 구분해 저장합니다. 아래 명령은 실행되지 않습니다.")
+            .font(.caption).foregroundStyle(.secondary)
+          TextField("검증 항목 / 실행했다고 보고한 명령 (선택)", text: $command)
+          Picker("보고된 결과", selection: $verdict) {
+            Text("확인 필요").tag("unknown"); Text("통과").tag("passed"); Text("실패").tag("failed")
+          }
+          if let workflow = model.workflow, model.supportsWorkflow {
+            VStack(alignment: .leading, spacing: 8) {
+              Text("연결할 완료 조건").font(.subheadline)
+              ForEach(workflow.workflow.criteria) { criterion in
+                Toggle(criterion.text, isOn: Binding(get: { criterionIDs.contains(criterion.id) }, set: { checked in
+                  if checked { criterionIDs.insert(criterion.id) } else { criterionIDs.remove(criterion.id) }
+                }))
+              }
+              Text(criterionIDs.isEmpty ? "조건을 선택하지 않으면 연결하지 않은 보고로 남습니다." : "선택한 조건의 현재 버전과 연결합니다. 조건 충족이나 승인을 뜻하지 않습니다.")
+                .font(.caption).foregroundStyle(.secondary)
+            }
+            Divider()
+            VStack(alignment: .leading, spacing: 8) {
+              Text("보고자가 실제 검토했다고 명시한 코드 상태").font(.subheadline)
+              Text("앱의 기록 시점 상태와 별도로 보관합니다. 알 수 없는 값은 비워 두세요. 현재 상태를 대신 채우지 않습니다.")
+                .font(.caption).foregroundStyle(.secondary)
+              TextField("검토했다고 보고한 전체 HEAD (선택)", text: $claimedHead)
+                .font(.system(size: 12, design: .monospaced))
+              TextField("검토했다고 보고한 변경 상태 해시 (선택)", text: $claimedSnapshot)
+                .font(.system(size: 12, design: .monospaced))
+              HStack {
+                TextField("제공자 (예: Claude, 직접 검토)", text: $provider)
+                TextField("정확한 모델 / 버전 (선택)", text: $providerModel)
+              }
+              Picker("보고 완료 상태", selection: $reportStatus) {
+                Text("확인하지 못함").tag("unknown")
+                Text("완료했다고 보고").tag("completed")
+                Text("미완료").tag("incomplete")
+                Text("도구 오류").tag("tool_error")
+              }
+              Text("미완료·도구 오류·미확인은 통과 결과가 적혀 있어도 검토 완료 근거로 취급하지 않습니다.")
+                .font(.caption).foregroundStyle(.secondary)
+            }
+          }
+          Text("결과와 근거").font(.subheadline)
+          TextEditor(text: $note).font(.system(size: 13)).frame(height: 130).border(WorkbenchTheme.line)
+            .accessibilityLabel("결과와 근거")
+          if model.supportsWorkflow {
+            Text("근거 파일 / 링크 · 한 줄에 하나씩 (내용은 읽거나 전송하지 않습니다)").font(.subheadline)
+            TextEditor(text: $artifacts).font(.system(size: 12)).frame(height: 65).border(WorkbenchTheme.line)
+              .accessibilityLabel("근거 파일 / 링크")
+          }
+        }.padding(.trailing, 8)
       }
-      Text("결과와 근거").font(.subheadline)
-      TextEditor(text: $note).font(.system(size: 13)).frame(height: 150).border(WorkbenchTheme.line)
-        .accessibilityLabel("결과와 근거")
       if let message = model.message { Text(message).font(.caption).foregroundStyle(.secondary) }
       HStack {
         Spacer()
         Button("취소") { dismiss() }.keyboardShortcut(.cancelAction)
         Button("보고로 저장") {
-          Task { if await model.record(kind: kind, verdict: verdict, command: command, note: note, at: identity) { dismiss() } }
+          Task {
+            let refs = artifacts.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            if await model.record(kind: kind, verdict: verdict, command: command, note: note,
+              criterionIDs: criterionIDs.sorted(), claimedReviewedState: claimedState,
+              provider: provider, model: providerModel, artifacts: refs, reportStatus: reportStatus, at: identity) { dismiss() }
+          }
         }.keyboardShortcut(.defaultAction).disabled(note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
       }
-    }.padding(24).frame(width: 580).disabled(model.working)
+    }.padding(24).frame(width: 720, height: model.supportsWorkflow ? 660 : 490)
+      .disabled(model.working || identity != model.identity)
   }
 }
 

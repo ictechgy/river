@@ -11,6 +11,11 @@ public struct TaskContext: Decodable, Sendable, Equatable {
 public struct TaskContextBundle: Decodable, Sendable, Equatable {
   public let context: TaskContext
   public let verifications: [VerificationReceipt]
+  /// Absent for older engines: keep the legacy editor and report flow available.
+  public let workflowVersion: Int?
+  public init(context: TaskContext, verifications: [VerificationReceipt], workflowVersion: Int? = nil) {
+    self.context = context; self.verifications = verifications; self.workflowVersion = workflowVersion
+  }
 }
 public struct VerificationReceipt: Decodable, Identifiable, Sendable, Equatable {
   public let id: String

@@ -45,7 +45,12 @@ struct ReportRequest {
 }
 
 impl Service {
-    fn context_scope(&self, repo: &str, op: Option<&str>, context: Option<&str>) -> Result<String> {
+    pub(super) fn context_scope(
+        &self,
+        repo: &str,
+        op: Option<&str>,
+        context: Option<&str>,
+    ) -> Result<String> {
         self.workspace.repo(repo)?;
         if let Some(context) = context.or(op) {
             let context = self.operation_summary(context)?;
@@ -64,7 +69,7 @@ impl Service {
             Ok(format!("repo:{repo}"))
         }
     }
-    fn read_context(db: &Connection, scope: &str) -> Result<TaskContext> {
+    pub(super) fn read_context(db: &Connection, scope: &str) -> Result<TaskContext> {
         let body: Option<String> = db
             .query_row(
                 "SELECT body FROM task_contexts WHERE scope=?1",
@@ -90,6 +95,7 @@ impl Service {
             .map(|r| Ok(serde_json::from_str(&r?)?))
             .collect::<Result<_>>()?;
         Ok(TaskContextBundle {
+            workflow_version: Some(2),
             context,
             verifications,
         })
@@ -127,6 +133,15 @@ impl Service {
                 {
                     let mut db = self.db();
                     let tx = db.transaction()?;
+                    let upgraded: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM workflow_states WHERE scope=?1)",
+                        [&scope],
+                        |r| r.get(0),
+                    )?;
+                    ensure!(
+                        !upgraded,
+                        "workflow_upgrade_required: use the workflow editor to preserve criterion identities"
+                    );
                     ensure!(
                         Self::read_context(&tx, &scope)?.revision == p.expected_revision,
                         "context_conflict: reload the saved context before editing again"

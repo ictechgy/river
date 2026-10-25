@@ -11,6 +11,14 @@
       "items": {
         "$ref": "#/$defs/VerificationReceipt"
       }
+    },
+    "workflow_version": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
     }
   },
   "required": [

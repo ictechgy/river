@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VerificationGuideContents",
+  "type": "object",
+  "properties": {
+    "content": {
+      "type": "string"
+    },
+    "expected_sha256": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "format": {
+      "type": "string"
+    },
+    "op_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "path": {
+      "type": "string"
+    },
+    "read_at": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "repo_id": {
+      "type": "string"
+    },
+    "sha256": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "repo_id",
+    "path",
+    "sha256",
+    "status",
+    "content",
+    "format",
+    "read_at"
+  ]
+}
