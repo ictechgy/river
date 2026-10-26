@@ -7,18 +7,18 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Signed River updates for macOS</description>
     <language>en</language>
     <item>
-      <title>River 0.1.0-alpha.9</title>
-      <pubDate>Sun, 25 Oct 2026 11:02:16 GMT</pubDate>
-      <sparkle:version>10</sparkle:version>
-      <sparkle:shortVersionString>0.1.0-alpha.9</sparkle:shortVersionString>
+      <title>River 0.1.0-alpha.10</title>
+      <pubDate>Mon, 26 Oct 2026 07:26:27 GMT</pubDate>
+      <sparkle:version>11</sparkle:version>
+      <sparkle:shortVersionString>0.1.0-alpha.10</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <description sparkle:format="plain-text">River 0.1.0-alpha.9 for macOS.
+      <description sparkle:format="plain-text">River 0.1.0-alpha.10 for macOS.
 This is an early alpha release. The update is Developer ID signed and is not notarized by Apple.</description>
-      <enclosure url="https://github.com/ictechgy/river/releases/download/v0.1.0-alpha.9/River-0.1.0-alpha.9-macos-arm64.dmg" length="9518024" type="application/octet-stream" sparkle:os="macos" sparkle:edSignature="J82gH5cHSpyRXZSHurojEOixGr21DN8iu2Gp6lOF9JWnBy/Q5Q7RPEzG1CGrBNPo7pVvT2bFgrKulXKahGcQCQ=="></enclosure>
+      <enclosure url="https://github.com/ictechgy/river/releases/download/v0.1.0-alpha.10/River-0.1.0-alpha.10-macos-arm64.dmg" length="9593925" type="application/octet-stream" sparkle:os="macos" sparkle:edSignature="u1erTyJZfoT6cfBbXz3dK8vJhXRyQreWtjssp9HjlR8fp7MCfctXJD0OeGBW7jFcgOs46lWKKlTZcvkxp4PWDw=="></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: WIOOqVxPz9Ln+/LYZ4/fEpRfEOJSUhpjEKR73Jfl9Wr73o6N4nC67WBXDXNwmhx+jMtKSA6iHlSvhlezZUORCA==
-length: 1476
+edSignature: 5nXQVOJc80FvmXgS+/nJY/hXZfJfQRG3OgGYUzLNRKdGZV4eD2ZyKo04WmmTFubO407OUVlToxKx6VeJdv41Cw==
+length: 1481
 -->
