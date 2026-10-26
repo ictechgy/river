@@ -143,6 +143,9 @@ struct NewTaskSheet: View {
       self.error = "같은 브랜치가 있어 새 이름을 제안했습니다. 이름을 확인한 뒤 계획을 다시 확인해 주세요."
     } catch let failure as ServiceFailure where failure.code == "repository_busy" {
       self.error = "다른 저장소 작업을 준비 중입니다. 준비가 끝나면 다시 시도해 주세요."
-    } catch { self.error = UserFacingFailure.message(error) }
+    } catch {
+      TaskPlanRecovery.discardExpiredPreview(&plan, after: error)
+      self.error = UserFacingFailure.message(error)
+    }
   }
 }

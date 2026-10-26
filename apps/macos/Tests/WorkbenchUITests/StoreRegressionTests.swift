@@ -242,6 +242,69 @@ private final class SubmissionReplies: @unchecked Sendable {
   }
 }
 
+private final class NavigationRefreshReplies: @unchecked Sendable {
+  let base = Replies()
+  let lock = NSLock()
+  var holdA = false
+  var holdB = false
+  var reads: [String] = []
+  let arrivedA = Flag(), arrivedB = Flag()
+  let gateA = DispatchSemaphore(value: 0), gateB = DispatchSemaphore(value: 0)
+  init() { base.diffFails = false }
+  func respond(_ request: [String: Any]) -> [String: Any] {
+    let method = request["method"] as? String ?? ""
+    let params = request["params"] as? [String: Any] ?? [:]
+    let repo = params["repo_id"] as? String ?? "a"
+    if method == "list_workspaces" {
+      return ["schema_version": 1, "result": [["schema_version": 1, "id": "navigation",
+        "repositories": [["id": "a", "path": "/tmp/navigation-a"], ["id": "b", "path": "/tmp/navigation-b"]], "groups": []]]]
+    }
+    if method == "get_repo_status" {
+      let hold = lock.withLock {
+        reads.append(repo)
+        if repo == "a", holdA { holdA = false; return "a" }
+        if repo == "b", holdB { holdB = false; return "b" }
+        return ""
+      }
+      if hold == "a" { arrivedA.value = true; _ = gateA.wait(timeout: .now() + .seconds(5)) }
+      if hold == "b" { arrivedB.value = true; _ = gateB.wait(timeout: .now() + .seconds(5)) }
+    }
+    var response = base.respond(request)
+    if var value = response["result"] as? [String: Any] {
+      if method == "get_repo_status" { value["path"] = "/tmp/navigation-\(repo)" }
+      if method == "get_repo_status" || method == "get_diff" { value["snapshot_hash"] = "code-\(repo)" }
+      response["result"] = value
+    }
+    return response
+  }
+}
+
+@Test @MainActor func navigationCancelsObsoleteRefreshWithoutClearingTheReplacementOwner() async throws {
+  let replies = NavigationRefreshReplies(); let server = try TestService { replies.respond($0) }
+  let store = WorkbenchStore(socketPath: server.path); await store.connect()
+  #expect(store.repository?.path == "/tmp/navigation-a")
+  defer { replies.gateA.signal(); replies.gateB.signal() }
+  replies.lock.withLock { replies.holdA = true; replies.holdB = true }
+  let oldRefresh = Task { await store.refresh(forceDiff: true) }
+  try await wait(replies.arrivedA)
+  store.select(.init(repoId: "b"))
+  // B must start while A's server response is still deliberately withheld.
+  try await wait(replies.arrivedB)
+  #expect(store.repository == nil && store.validatingSelection)
+  #expect(DiffSelectionPresentation(store) == .initialLoading)
+  let before = replies.lock.withLock { replies.reads.filter { $0 == "b" }.count }
+  await store.refresh() // The cancelled A task must not release B's refresh ownership.
+  #expect(replies.lock.withLock { replies.reads.filter { $0 == "b" }.count } == before)
+  replies.gateA.signal(); await oldRefresh.value
+  #expect(store.repository == nil && store.validatingSelection)
+  replies.gateB.signal()
+  for _ in 0..<200 where store.validatingSelection { try await Task.sleep(for: .milliseconds(5)) }
+  #expect(store.selection?.repoId == "b")
+  #expect(store.repository?.path == "/tmp/navigation-b")
+  #expect(store.diff?.snapshotHash == "code-b")
+  #expect(store.canEdit && !store.selectionCheckFailed)
+}
+
 @Test @MainActor func commitKeepsTextTypedAfterSubmissionAndClearsUneditedDraft() async throws {
   let replies = SubmissionReplies(); let server = try TestService { replies.respond($0) }
   let store = WorkbenchStore(socketPath: server.path); await store.connect()
@@ -2470,6 +2533,7 @@ private final class WorkflowReplies: @unchecked Sendable {
   let lock = NSLock()
   let legacy = Replies()
   var capability = true
+  var workflowReadFailure: String?
   var compatibility = "current"
   var contextRevision = 1
   var workflowRevision = 1
@@ -2513,7 +2577,10 @@ private final class WorkflowReplies: @unchecked Sendable {
         case "get_task_context":
           result = ["context": context(), "verifications": receipts]
           if capability { result["workflow_version"] = 2 }
-        case "get_task_workflow": result = bundle()
+        case "get_task_workflow":
+          if !capability { return ["schema_version": 1, "error": ["code": "unknown_method", "message": "synthetic legacy engine"]] }
+          if let workflowReadFailure { return ["schema_version": 1, "error": ["code": workflowReadFailure, "message": "synthetic workflow read failure"]] }
+          result = bundle()
         case "save_task_workflow":
           if dropSaveReply { return nil }
           if let saveFailure { return ["schema_version": 1, "error": ["code": saveFailure, "message": "synthetic stale write"]] }
@@ -2575,6 +2642,42 @@ private final class WorkflowReplies: @unchecked Sendable {
   #expect(model.workflow == nil)
   #expect(model.draft?.criteria == "Duplicate\nDuplicate")
   #expect(replies.lock.withLock { replies.requests.map(\.method) } == ["get_task_context"])
+}
+
+@Test @MainActor func richRefreshUsesOneRPCAndDoesNotRepublishUnchangedState() async throws {
+  let replies = WorkflowReplies(); let server = try TestService { replies.respond($0) }
+  let model = configuredWorkflowStore(server)
+  await model.refresh()
+  #expect(replies.lock.withLock { replies.requests.map(\.method) } == ["get_task_context", "get_task_workflow"])
+  replies.lock.withLock { replies.requests.removeAll() }
+  let subscription = model.objectWillChange.sink { replies.legacy.lock.withLock { replies.legacy.notifications += 1 } }
+  await model.refresh(); await model.refresh()
+  #expect(replies.lock.withLock { replies.requests.map(\.method) } == ["get_task_workflow", "get_task_workflow"])
+  #expect(replies.legacy.lock.withLock { replies.legacy.notifications } == 0)
+  replies.lock.withLock { replies.purpose = "Changed purpose"; replies.contextRevision += 1 }
+  await model.refresh()
+  #expect(model.bundle?.context.purpose == "Changed purpose")
+  #expect(replies.legacy.lock.withLock { replies.legacy.notifications } > 0)
+  withExtendedLifetime(subscription) {}
+}
+
+@Test @MainActor func richRefreshOnlyFallsBackForAnUnsupportedMethodAndRediscoversAfterReconnect() async throws {
+  let replies = WorkflowReplies(); let server = try TestService { replies.respond($0) }
+  let model = configuredWorkflowStore(server); await model.refresh()
+  replies.lock.withLock { replies.requests.removeAll(); replies.workflowReadFailure = "workflow_conflict" }
+  await model.refresh()
+  #expect(!model.loaded)
+  #expect(replies.lock.withLock { replies.requests.map(\.method) } == ["get_task_workflow"])
+  replies.lock.withLock { replies.requests.removeAll(); replies.workflowReadFailure = nil; replies.capability = false }
+  await model.refresh()
+  #expect(model.loaded && !model.supportsWorkflow)
+  #expect(replies.lock.withLock { replies.requests.map(\.method) } == ["get_task_workflow", "get_task_context"])
+  replies.lock.withLock { replies.requests.removeAll(); replies.capability = true }
+  model.configure(client: ServiceClient(socketPath: server.path), workspace: "space", location: .init(repoId: "a"),
+    contextOperationID: nil, operation: nil, title: "Reconnected workflow")
+  await model.refresh()
+  #expect(model.loaded && model.supportsWorkflow)
+  #expect(replies.lock.withLock { replies.requests.map(\.method) } == ["get_task_context", "get_task_workflow"])
 }
 
 @Test @MainActor func workflowSavePreservesIDsAcrossReorderAndSendsBothCASRevisions() async throws {

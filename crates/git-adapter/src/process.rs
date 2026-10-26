@@ -107,7 +107,9 @@ pub(super) fn run(
         })
     });
     let start = Instant::now();
+    let mut interrupted = None;
     let (status, timed_out) = loop {
+        interrupted = crate::check_deadline().err().or(interrupted);
         // Keep the leader unreaped until its group has been signalled, so its
         // PID/PGID cannot be reused between exit observation and cleanup.
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
@@ -129,6 +131,7 @@ pub(super) fn run(
         if info.si_pid == child.id() as i32
             || start.elapsed() >= timeout
             || overflow.load(Ordering::SeqCst)
+            || interrupted.is_some()
         {
             let timed_out = info.si_pid != child.id() as i32 && start.elapsed() >= timeout;
             unsafe {
@@ -136,7 +139,14 @@ pub(super) fn run(
             }
             break (child.wait().context("git_wait_failed"), timed_out);
         }
-        thread::sleep(Duration::from_millis(5));
+        // Short metadata commands should not wait a full 5ms after exit.
+        // Keep the original polling cost once a command runs beyond startup.
+        let interval = if start.elapsed() < Duration::from_millis(20) {
+            1
+        } else {
+            5
+        };
+        thread::sleep(Duration::from_millis(interval));
     };
     done.store(true, Ordering::SeqCst);
     let (stdout, out_complete) = stdout
@@ -153,6 +163,9 @@ pub(super) fn run(
         .transpose()?
         .transpose();
     let status = status?;
+    if let Some(error) = interrupted {
+        return Err(error);
+    }
     ensure!(!timed_out, "git_timeout");
     ensure!(!overflow.load(Ordering::SeqCst), "result_too_large");
     ensure!(out_complete && err_complete, "git_output_incomplete");
@@ -233,6 +246,21 @@ mod tests {
         assert!(out.stderr.len() <= 16 * 1024 + 30);
     }
     #[test]
+    fn early_leader_exit_still_terminates_descendants_and_drains_both_pipes() {
+        // The background child's own lifetime is bounded even if this runner
+        // regresses. Its inherited pipes must close when the group is stopped.
+        let out = run(
+            shell("sleep 5 & printf result; printf note >&2"),
+            None,
+            Duration::from_secs(2),
+            1024,
+        )
+        .unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stdout, b"result");
+        assert_eq!(out.stderr, b"note");
+    }
+    #[test]
     fn stdout_and_blocked_stdin_have_bounded_lifetimes() {
         let error = run(
             shell("while :; do printf 'too much output'; done"),
@@ -261,6 +289,40 @@ mod tests {
         });
         assert_eq!(result.unwrap_err().to_string(), "git_timeout");
         assert!(start.elapsed() < Duration::from_secs(2));
+        crate::check_deadline().unwrap();
+    }
+
+    #[test]
+    fn cancellation_stops_a_running_command_and_joins_its_pipe_threads() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let marker = temp.path().join("started");
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "printf started > \"$1\"; exec sleep 30", "test"])
+            .arg(&marker);
+        let flag = Arc::new(AtomicBool::new(false));
+        let cancel = flag.clone();
+        let canceller = thread::spawn(move || {
+            let start = Instant::now();
+            while !marker.exists() {
+                assert!(start.elapsed() < Duration::from_secs(5));
+                thread::yield_now();
+            }
+            cancel.store(true, Ordering::SeqCst);
+        });
+        let start = Instant::now();
+        let error = crate::deadline::with_read_cancellation(flag, || {
+            run(
+                command,
+                Some(&vec![0; 1024 * 1024]),
+                Duration::from_secs(30),
+                1024,
+            )
+        })
+        .unwrap_err();
+        canceller.join().unwrap();
+        assert_eq!(error.to_string(), "cancelled");
+        assert!(start.elapsed() < Duration::from_secs(5));
         crate::check_deadline().unwrap();
     }
 }

@@ -46,6 +46,8 @@ printf '{"method":"execute_plan","params":{"plan_id":"%s","idempotency_key":"log
 
 ## 조회와 쓰기 경계
 
+`get_repo_status`·`get_diff`·Git 위생 검사는 격리된 속성 조회를 위해 Apple Git 2.43 이상이 필요합니다. 지원하지 않는 버전은 `content_read_git_upgrade_required`, 지원 범위를 벗어난 설정·속성 구성은 `unsupported_content_read`로 중단합니다.
+
 - `get_repo_status`: `repo_id`. Task 작업용 폴더라면 `op_id`도 지정합니다.
 - `get_diff`: `repo_id`, `path`, 선택적으로 `staged`(기본 `false`)와 `op_id`.
 - `list_branches`: `repo_id`, 선택적으로 `op_id`. `get_branch_history`는 `repo_id`, `branch_ref`(목록의 `full_ref`), `tip_oid`로 대상을 고정합니다.

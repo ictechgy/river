@@ -2,7 +2,7 @@
 
 ## Source of truth
 
-- **Status:** Active. **Last refreshed:** 2026-10-25.
+- **Status:** Active. **Last refreshed:** 2026-10-26.
 - **Current direction:** River Clear. The product owner approved the two-column Focus arrangement and fresh water-colored palette after a Claude/Codex design discussion. The native implementation uses these as the starting arrangement and appearance for new preferences.
 - **Primary surfaces:** Native macOS welcome screen, Git review workspace, task planning/preparation, and task information.
 - **Evidence:** [Product scope](README.md), [River Clear rules](docs/design/river-clear.md), [familiar Git layouts](docs/design/familiar-git-layouts.md), and [current limitations](docs/limitations.md). Implementation lives in [WorkbenchUI](apps/macos/Sources/WorkbenchUI), particularly `WorkbenchTheme`, `LayoutPreferences`, `DockWorkspace`, `WorkspaceContextHeader`, and `FolderLocationControl`.
@@ -100,15 +100,16 @@
 
 ## Interaction states
 
-- **Loading:** Restore coherent cached review content while validating it; block edits until validation succeeds. First loads show a clear pending state. A failed lookup is an error, not an endless spinner.
+- **Loading:** Restore coherent cached review content while validating it; block edits until validation succeeds. Without a cached repository and Diff, show explicit initial loading before any clean/empty result. Planned folders and validation failures retain their distinct states. A failed lookup is an error, not an endless spinner.
 - **Empty:** Welcome offers a repository picker, synthetic example, and recent workspaces. Normal setup never asks for socket paths or terminal commands. Empty panels describe their next useful action concisely.
 - **Error:** Give a concrete recovery action and preserve location/drafts. Cached Diff stays visible but read-only after validation failure. Partial preparation keeps completed repositories available.
+- **Plan recovery:** An expired execution preview returns to the same filled-in form and requires a fresh preview before execution. Source drift or a branch collision during preparation directs the user to a new task plan; do not repeat an immutable invalid plan or delete existing branches/folders to make it pass.
 - **Success:** Show real per-repository readiness; avoid permanent celebratory cards or repeated ready badges. A task folder becomes selectable only with its true state.
 - **Disabled:** Explain actual blockers: read-only Stash, unsupported/oversized diff, conflicts, unresolved task, unstaged work, or validation in progress. Do not imply an unavailable operation succeeded.
 - **Reconnect:** Publish a candidate workspace only after its handshake. Same-workspace reconnect preserves drafts and invalidates executable plans. Old responses cannot replace newer workspace/location state.
 - **Unknown outcome:** Keep an origin-project notice during the app session; require inspection before repeating a write. Never silently replay a mutation.
 - **Remote writes:** Pull and push confirmation identifies the actual repository, folder, local branch, remote URL, and target branch. Freeze that identity with the reviewed state; switching folders/workspaces invalidates submission. A successful push remains successful if the subsequent refresh fails. Pull uses fast-forward integration and requires a clean folder; show concrete blockers. Network progress belongs to its originating location and must not erase commit drafts or move the user's selection.
-- **Refresh:** Explicit refresh re-reads selected Diff even with unchanged content snapshots. Background polling uses the cheaper unchanged-state path and pauses while inactive.
+- **Refresh:** Explicit refresh re-reads selected Diff even with unchanged content snapshots. Background polling uses the cheaper unchanged-state path and pauses while inactive. Location/workspace changes cancel the obsolete client read wait so current validation can start immediately; only the owning refresh may clear its loading state. This does not claim cancellation of server-side work. Discover workflow capability per connection, then read rich task information directly and publish only changed values. Fall back to older-engine discovery only for an unsupported method; preserve errors and drafts.
 
 ## Content voice
 
@@ -122,7 +123,7 @@
 - Native SwiftUI/AppKit and SwiftPM, macOS 14+ source target; Rust local service. No Tauri/WebView/Node runtime in the active app.
 - `WorkbenchTheme` owns semantic colors. Appearance persists separately from layout. Internal application identifiers/data paths remain compatible with existing registrations.
 - Git writes require fresh authorization and scoped snapshots. Presentation caching never authorizes writes. Original checkout, pinned plan, recipe trust, and stale-response protections remain intact.
-- Git hooks, fsmonitor, and external signing programs are disabled; app commits are unsigned. Configured external filters are rejected. See [limitations](docs/limitations.md) rather than weakening policy for a cleaner screen.
+- Git hooks, fsmonitor, and external signing programs are disabled; app commits are unsigned. Configured external filters are rejected. Status, Diff and hygiene-check content processes use private metadata/config/index and frozen attributes. Their Git 2.43 requirement has a concrete update explanation. Worktree materialization and commit retain a separate live-configuration boundary; do not describe this as universal Git isolation. See [limitations](docs/limitations.md) rather than weakening policy for a cleaner screen.
 - Retain bounded caches, diffs, history, and IPC. Avoid unnecessary re-fetches, full-store publication, layout-triggered Git work, and parsing during pointer movement. Large-repository performance is not yet benchmarked.
 - Remote Git transport uses provider-neutral SSH/HTTPS. The first implementation uses existing SSH agent/default identities and known-host files, or the trusted macOS Git keychain helper. Provider login, arbitrary credential helpers, SSH aliases/proxies, filesystem remotes, and automatic credential prompts are outside this version. See [remote contract](docs/remotes.md) for exact boundaries.
 - Validate Swift/Rust checks, real process boundaries, and native renders with synthetic Git data. Record OS input, keyboard, VoiceOver, supported-version, and performance validation separately; a screenshot does not establish them.

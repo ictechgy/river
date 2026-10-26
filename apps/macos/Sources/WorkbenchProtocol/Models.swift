@@ -216,7 +216,22 @@ public struct OperationEvent: Decodable, Sendable, Identifiable {
 }
 public struct MutationResult: Decodable, Sendable { public let view: RepositoryStatus? }
 extension WorkbenchOperation {
-  public var requiresNewPlan: Bool { repos.contains { $0.errorCode == "stale_source_snapshot" } }
+  public var requiresNewPlan: Bool { newPlanRecoveryHint != nil }
+  public var newPlanRecoveryHint: String? {
+    let sourceChanged = repos.contains { $0.errorCode == "stale_source_snapshot" }
+    let branchCollision = repos.contains { $0.errorCode == "branch_collision" }
+    let reason: String
+    switch (sourceChanged, branchCollision) {
+    case (true, true):
+      reason = "계획을 만든 뒤 원래 폴더가 바뀌고 같은 이름의 브랜치가 생겨 이 계획을 계속할 수 없습니다."
+    case (true, false):
+      reason = "계획을 만든 뒤 원래 폴더가 바뀌어 이 계획을 계속할 수 없습니다."
+    case (false, true):
+      reason = "같은 이름의 브랜치가 생겨 이 계획을 계속할 수 없습니다."
+    case (false, false): return nil
+    }
+    return reason + " ‘새 작업 만들기’로 현재 상태에서 준비하세요. 기존 폴더와 브랜치는 유지됩니다."
+  }
 }
 
 public enum StatusText {

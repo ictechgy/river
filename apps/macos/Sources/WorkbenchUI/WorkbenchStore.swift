@@ -196,6 +196,8 @@ public final class WorkbenchStore: ObservableObject {
   private var diffGeneration = UUID()
   private var diffRequest: Task<FileDiff, any Error>?
   private var refreshing = false
+  private var refreshRequest: Task<Void, Never>?
+  private var refreshIdentity: UUID?
   private var eventCursor = 0
   private let runtime: WorkspaceRuntime
   private var currentWorkspace: RecentWorkspace?
@@ -347,6 +349,7 @@ public final class WorkbenchStore: ObservableObject {
     if let op = operations.first(where: { $0.repos.contains { $0.hasWorktree } }),
       let repo = op.repos.first(where: { $0.hasWorktree })
     {
+      cancelRefresh()
       generation = UUID()
       cancelDiffRead()
       selection = .init(repoId: repo.id, opId: op.id)
@@ -443,9 +446,7 @@ public final class WorkbenchStore: ObservableObject {
   }
   public var pendingWorktreeHint: String {
     if operation?.isRunning == true { return "저장소 준비가 끝나면 변경 내용을 확인할 수 있습니다." }
-    if operation?.requiresNewPlan == true {
-      return "계획을 만든 뒤 원래 폴더가 바뀌었습니다. 원래 변경은 유지됩니다. 현재 상태를 기준으로 새 작업을 만들어 주세요."
-    }
+    if let hint = operation?.newPlanRecoveryHint { return hint }
     if ["failed", "needs_recovery", "cancelled"].contains(taskRepository?.state ?? "") {
       return "위 저장소의 준비 상태와 오류를 확인한 뒤 재시도하세요. 원래 프로젝트 폴더의 변경은 계속 확인할 수 있습니다."
     }
@@ -453,9 +454,7 @@ public final class WorkbenchStore: ObservableObject {
   }
   public var preparationHint: String {
     if taskInformationUnavailable { return taskInformationHint }
-    if operation?.requiresNewPlan == true {
-      return "원래 폴더가 바뀌어 이 계획을 계속할 수 없습니다. ‘새 작업 만들기’로 현재 상태에서 준비하세요. 기존 폴더와 브랜치는 유지됩니다."
-    }
+    if let hint = operation?.newPlanRecoveryHint { return hint }
     if pendingWorktree { return pendingWorktreeHint }
     if taskRepository?.state == "cancelled" { return "준비가 취소되었습니다. 위 저장소에서 재시도한 뒤 변경을 편집할 수 있습니다." }
     return "이 작업 폴더의 준비가 끝나면 변경을 편집할 수 있습니다. 위 저장소의 상태와 오류를 확인해 주세요."
@@ -539,6 +538,7 @@ public final class WorkbenchStore: ObservableObject {
     socketPath = socket
     connectedSocketPath = socket
     planSession = UUID()
+    cancelRefresh()
     generation = UUID()
     cancelDiffRead()
     clearDiffFailure()
@@ -613,6 +613,7 @@ public final class WorkbenchStore: ObservableObject {
     lastMetadataFailure = nil
     rememberLocation()
     let version = UUID()
+    cancelRefresh()
     generation = version
     cancelDiffRead()
     contextOperationID = contextID
@@ -635,11 +636,9 @@ public final class WorkbenchStore: ObservableObject {
     error = nil
     errorDetails = nil
     Task {
-      // A superseded read may still be in flight. Refresh this selection as soon as it ends.
-      while refreshing {
-        guard generation == version else { return }
-        try? await Task.sleep(for: .milliseconds(20))
-      }
+      // Navigation already released obsolete ownership. If another caller has
+      // started this selection's validation, share that attempt rather than
+      // leaving a delayed retry which can race a later recovery refresh.
       guard generation == version, validatingSelection else { return }
       await refresh()
     }
@@ -690,9 +689,32 @@ public final class WorkbenchStore: ObservableObject {
         guard version == generation else { return }
       }
     }
-    guard let client, !refreshing else { return }
+    guard client != nil, !refreshing, !Task.isCancelled else { return }
+    let identity = UUID()
+    refreshIdentity = identity
     refreshing = true
-    defer { refreshing = false }
+    let request = Task { await performRefresh(forceDiff: forceDiff, identity: identity) }
+    refreshRequest = request
+    await withTaskCancellationHandler {
+      await request.value
+    } onCancel: { request.cancel() }
+  }
+  private func cancelRefresh() {
+    refreshRequest?.cancel()
+    refreshRequest = nil
+    refreshIdentity = nil
+    refreshing = false
+  }
+  private func performRefresh(forceDiff: Bool, identity: UUID) async {
+    defer {
+      // An obsolete read must never clear ownership of its replacement.
+      if refreshIdentity == identity {
+        refreshRequest = nil
+        refreshIdentity = nil
+        refreshing = false
+      }
+    }
+    guard refreshIdentity == identity, let client, !Task.isCancelled else { return }
     let version = generation
     let location = selection
     var metadataFailures: [String] = []
@@ -701,14 +723,14 @@ public final class WorkbenchStore: ObservableObject {
       do {
         ops = try await client.call("list_operations")
       } catch {
-        guard version == generation else { return }
+        guard version == generation, !Task.isCancelled else { return }
         unresolvedOperationIDs.formUnion(activeOperationIDs)
         unresolvedOperationIDs.formUnion(operations.map(\.id))
         unresolvedOperationIDs.formUnion(pinnedOperations.keys)
         configureTaskContext()
         throw error
       }
-      guard version == generation else { return }
+      guard version == generation, !Task.isCancelled else { return }
       if operations != ops { operations = ops }
       let updateSocket = connectedSocketPath ?? socketPath
       let updateIdentity = UpdateWorkspaceIdentity(socket: updateSocket, workspaceID: workspace?.id ?? "")
@@ -718,11 +740,11 @@ public final class WorkbenchStore: ObservableObject {
       for id in previouslyRunning.subtracting(Set(ops.map(\.id))).subtracting(activeOperationIDs).sorted() {
         do {
           let op: WorkbenchOperation = try await client.call("get_operation", params: ["op_id": .string(id)])
-          guard version == generation else { return }
+          guard version == generation, !Task.isCancelled else { return }
           guard op.id == id else { continue }
           rememberUpdateOperation(op, identity: updateIdentity, title: workspaceTitle)
         } catch {
-          guard version == generation else { return }
+          guard version == generation, !Task.isCancelled else { return }
           // Keep the restart block until this same service confirms a terminal status.
         }
       }
@@ -735,11 +757,11 @@ public final class WorkbenchStore: ObservableObject {
         } else {
           do {
             let value: WorkbenchOperation = try await client.call("get_operation", params: ["op_id": .string(id)])
-            guard version == generation, requiredIDs == activeOperationIDs else { return }
+            guard version == generation, requiredIDs == activeOperationIDs, !Task.isCancelled else { return }
             guard value.id == id else { throw UIError.operationIdentityMismatch }
             pinned[id] = value
           } catch {
-            guard version == generation, requiredIDs == activeOperationIDs else { return }
+            guard version == generation, requiredIDs == activeOperationIDs, !Task.isCancelled else { return }
             // Keep known identity/drafts for display, but never authorize Task
             // context or worktree edits using a summary that failed to refresh.
             pinned[id] = pinnedOperations[id]
@@ -757,31 +779,31 @@ public final class WorkbenchStore: ObservableObject {
       for op in neededDetails.filter({ tasks[$0.taskId] == nil }).prefix(8) {
         do {
           let detail: TaskDetail = try await client.call("get_task", params: ["task_id": .string(op.taskId)])
-          guard version == generation else { return }
+          guard version == generation, !Task.isCancelled else { return }
           tasks[detail.id] = detail
         } catch {
-          guard version == generation else { return }
+          guard version == generation, !Task.isCancelled else { return }
           metadataFailures.append("작업 정보를 읽지 못했습니다.")
         }
       }
       configureTaskContext()
       await taskContext.refresh()
-      guard version == generation else { return }
+      guard version == generation, !Task.isCancelled else { return }
       do {
         let newEvents: [OperationEvent] = try await client.call("events", params: ["cursor": .number(Double(eventCursor)), "latest": .bool(eventCursor == 0)])
-        guard version == generation else { return }
+        guard version == generation, !Task.isCancelled else { return }
         if !newEvents.isEmpty { events.append(contentsOf: newEvents) }
         if let last = newEvents.last { eventCursor = last.sequence }
         if events.count > 1000 { events.removeFirst(events.count - 1000) }
       } catch {
-        guard version == generation else { return }
+        guard version == generation, !Task.isCancelled else { return }
         metadataFailures.append("준비 기록을 읽지 못했습니다.")
       }
       if let location {
         do {
           let entries: [GitStash] = try await client.call(
             "list_stashes", params: ["repo_id": .string(location.repoId)])
-          guard version == generation else { return }
+          guard version == generation, !Task.isCancelled else { return }
           if stashes != entries { stashes = entries }
           if stashError != nil { stashError = nil }
           if let selectedStashOID, !entries.contains(where: { $0.oid == selectedStashOID }) {
@@ -794,7 +816,7 @@ public final class WorkbenchStore: ObservableObject {
             stashError = "선택한 stash가 외부에서 삭제되었습니다. 현재 변경으로 돌아왔습니다."
           }
         } catch {
-          guard version == generation else { return }
+          guard version == generation, !Task.isCancelled else { return }
           stashError = "Stash 목록을 읽지 못했습니다. 새로고침해 주세요."
         }
         if let opId = location.opId, !unresolvedOperationIDs.contains(opId),
@@ -806,7 +828,7 @@ public final class WorkbenchStore: ObservableObject {
         } else if !taskInformationUnavailable {
           let status: RepositoryStatus = try await client.call(
             "get_repo_status", params: params(for: location))
-          guard version == generation else { return }
+          guard version == generation, !Task.isCancelled else { return }
           let changed = repository?.snapshotHash != status.snapshotHash
           if repository != status { repository = status }
           if !isViewingStash {
@@ -837,7 +859,7 @@ public final class WorkbenchStore: ObservableObject {
           }
         }
       }
-      guard version == generation else { return }
+      guard version == generation, !Task.isCancelled else { return }
       if taskInformationUnavailable {
         if !validatingSelection { validatingSelection = true }
         if !selectionCheckFailed { selectionCheckFailed = true }
@@ -856,7 +878,7 @@ public final class WorkbenchStore: ObservableObject {
       if error == lastRefreshFailure && lastRefreshFailure != nil { error = nil; errorDetails = nil }
       lastRefreshFailure = nil
     } catch {
-      guard version == generation else { return }
+      guard version == generation, !(error is CancellationError), !Task.isCancelled else { return }
       // Keep mutation guards until a fresh coherent read succeeds. An error
       // is no longer presented as endless loading or re-opened every poll.
       if !validatingSelection { validatingSelection = true }

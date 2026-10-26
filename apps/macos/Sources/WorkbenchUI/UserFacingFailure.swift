@@ -39,6 +39,8 @@ enum UserFacingFailure {
       case "remote_outcome_unknown": return UIError.remoteOutcomeUnknown.localizedDescription
       case "unsupported_remote_config", "unsupported_remote_command", "unsupported_remote_endpoints", "unsupported_url_rewrite", "unsupported_partial_clone", "unsupported_http_config", "unsupported_http_configuration", "unsupported_repository_format": return "현재 Git 연결 설정을 지원하지 않습니다. 원격 URL·URL 재작성·전송 명령·HTTP 설정을 확인해 주세요. 사용자 지정 SSH 설정은 지원하지 않습니다."
       case "unsupported_external_filter": return "Git 외부 필터가 등록되어 있습니다. 현재 버전은 실제 사용 여부와 관계없이 전역 설정을 포함한 외부 필터 환경을 지원하지 않습니다."
+      case "content_read_git_upgrade_required": return "변경 내용을 안전하게 조회하려면 Apple Git 2.43 이상이 필요합니다. Xcode 또는 Command Line Tools를 업데이트한 뒤 다시 열어 주세요."
+      case "unsupported_content_read": return "이 저장소의 Git 설정이나 속성 구성을 현재 지원하지 않아 변경 내용을 읽지 못했습니다. 오류 상세 내용과 Git에서 실제 변경 상태를 확인해 주세요."
       case "file_staging_git_upgrade_required": return "일반 파일 전체 스테이징에는 Apple Git 2.42 이상이 필요합니다. Xcode 또는 Command Line Tools를 업데이트해 주세요."
       case "unsupported_file_conversion": return "이 파일의 Git 속성이나 변환 설정을 안전하게 처리할 수 없어 스테이징하지 않았습니다. .gitattributes와 전역·저장소 속성 설정을 Git에서 확인해 주세요."
       case "unsafe_task_worktree", "wrong_task_branch": return "작업 폴더의 위치나 브랜치가 바뀌었습니다. 원래 폴더와 브랜치를 복구한 뒤 새로고침해 주세요."

@@ -1,8 +1,11 @@
+mod content_read;
 mod deadline;
 mod file_conversion;
 mod file_hash;
 mod file_staging;
-pub use deadline::{check_deadline, fresh_deadline, with_deadline};
+pub use deadline::{
+    READ_PHASE_TIMEOUT, check_deadline, fresh_deadline, with_deadline, with_read_cancellation,
+};
 pub use file_staging::stage_file;
 mod process;
 pub mod remotes;
@@ -109,7 +112,7 @@ pub fn command(path: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u
     };
     let write = matches!(
         args.get(offset),
-        Some(&("commit" | "checkout" | "reset" | "add"))
+        Some(&("commit" | "checkout" | "reset" | "add" | "update-ref"))
     ) || (args.get(offset) == Some(&"apply") && !args.contains(&"--check"))
         || (args.get(offset) == Some(&"worktree")
             && !matches!(args.get(offset + 1), Some(&"list")));
@@ -176,9 +179,13 @@ pub fn no_external_filters(path: &Path) -> Result<()> {
 /// Fixed, read-only verification. Nonzero diff --check output is evidence, not an RPC failure.
 /// Drain both pipes while retaining only bounded output; no shell or user command is accepted.
 pub fn check_changes(path: &Path) -> Result<(workbench_domain::Verdict, String, bool)> {
+    with_deadline(READ_PHASE_TIMEOUT, || check_changes_inner(path))
+}
+fn check_changes_inner(path: &Path) -> Result<(workbench_domain::Verdict, String, bool)> {
     use std::time::Duration;
     use workbench_domain::Verdict;
-    no_external_filters(path)?;
+    let snapshot = snapshot(path)?;
+    let context = content_read::ContentReadContext::capture(path, &snapshot, None)?;
     let mut verdict = Verdict::Passed;
     let mut output = String::new();
     let mut truncated = false;
@@ -203,7 +210,7 @@ pub fn check_changes(path: &Path) -> Result<(workbench_domain::Verdict, String, 
                 return Ok((Verdict::Unknown, output, truncated));
             }
         };
-        let result = process::run(git_command(path, &args), None, time_limit, 8 * 1024 * 1024);
+        let result = with_deadline(time_limit, || context.output(&args, None, 8 * 1024 * 1024));
         let result = match result {
             Ok(result) => result,
             Err(error) => {
@@ -242,7 +249,29 @@ pub fn check_changes(path: &Path) -> Result<(workbench_domain::Verdict, String, 
             verdict = Verdict::Failed;
         }
     }
+    context.validate()?;
+    ensure!(snapshot == crate::snapshot(path)?, "stale_read_snapshot");
     Ok((verdict, output, truncated))
+}
+
+/// A clean/status read shares the same immutable conversion boundary as view.
+pub fn status_bytes(path: &Path) -> Result<Vec<u8>> {
+    with_deadline(READ_PHASE_TIMEOUT, || {
+        let snapshot = snapshot(path)?;
+        let context = content_read::ContentReadContext::capture(path, &snapshot, None)?;
+        let output = context.bytes(&[
+            "-c",
+            "status.renames=false",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignore-submodules=all",
+        ])?;
+        context.validate()?;
+        ensure!(snapshot == crate::snapshot(path)?, "stale_read_snapshot");
+        Ok(output)
+    })
 }
 pub fn root(path: &Path) -> Result<PathBuf> {
     let path = fs::canonicalize(path).context("invalid_repo_path")?;
@@ -317,7 +346,7 @@ pub fn no_conflicts(path: &Path) -> Result<()> {
     Ok(())
 }
 pub fn files(path: &Path) -> Result<BTreeMap<String, String>> {
-    snapshot_files(path, false, false)
+    with_deadline(READ_PHASE_TIMEOUT, || snapshot_files(path, false, false))
 }
 fn snapshot_files(
     path: &Path,
@@ -365,12 +394,18 @@ fn snapshot_files(
     Ok(result)
 }
 pub fn snapshot(path: &Path) -> Result<Snapshot> {
-    snapshot_with_scope(path, false, false)
+    with_deadline(READ_PHASE_TIMEOUT, || {
+        no_external_filters(path)?;
+        snapshot_with_scope(path, false, false)
+    })
 }
 pub fn preparation_snapshot(path: &Path) -> Result<Snapshot> {
     // Ignored output is still an undeclared recipe write. Only task preparation
     // scans it; ordinary review must not hash ignored build/cache directories.
-    snapshot_with_scope(path, true, false)
+    with_deadline(READ_PHASE_TIMEOUT, || {
+        no_external_filters(path)?;
+        snapshot_with_scope(path, true, false)
+    })
 }
 fn snapshot_with_scope(
     path: &Path,
@@ -395,25 +430,41 @@ fn snapshot_with_scope(
             hash(git_bytes(path, &["ls-files", "--stage", "-z"])?),
             // ls-files alone omits intent-to-add. Cached raw diff distinguishes
             // an empty ITA entry from a real staged empty-file addition.
-            hash(git_bytes(
-                path,
-                &[
-                    "diff",
-                    "--cached",
-                    "--raw",
-                    "-z",
-                    "--no-abbrev",
-                    "--no-renames",
-                    "--no-ext-diff",
-                    "--no-textconv",
-                    "--ignore-submodules=none",
-                    "--ita-invisible-in-index",
-                    "--",
-                ],
-            )?),
+            hash(cached_index_metadata(path)?),
         ))?,
         files: snapshot_files(path, include_ignored, presentation_cache)?,
     })
+}
+// This exact cached raw command reads only index/HEAD metadata. It neither
+// opens working files for conversion nor runs external diff/text conversion.
+// Keeping the argv private prevents a flag-based exemption for public commands.
+fn cached_index_metadata(path: &Path) -> Result<Vec<u8>> {
+    let output = process::run(
+        git_command(
+            path,
+            &[
+                "diff",
+                "--cached",
+                "--raw",
+                "-z",
+                "--no-abbrev",
+                "--no-renames",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--ignore-submodules=none",
+                "--ita-invisible-in-index",
+                "--",
+            ],
+        ),
+        None,
+        std::time::Duration::from_secs(15),
+        8 * 1024 * 1024,
+    )?;
+    ensure!(
+        output.status.success(),
+        "git_failed: cached index metadata unavailable"
+    );
+    Ok(output.stdout)
 }
 pub fn verify_checkout(path: &Path, source: &Path, branch: &str, expected_oid: &str) -> Result<()> {
     let locked = git_path(
@@ -596,18 +647,20 @@ pub struct RepoView {
     pub git_version: String,
 }
 pub fn view(path: &Path) -> Result<RepoView> {
+    with_deadline(READ_PHASE_TIMEOUT, || view_inner(path))
+}
+fn view_inner(path: &Path) -> Result<RepoView> {
     let snapshot = snapshot_with_scope(path, false, true)?;
-    let status = git_bytes(
-        path,
-        &[
-            "-c",
-            "status.renames=false",
-            "status",
-            "--porcelain=v1",
-            "-z",
-            "--untracked-files=all",
-        ],
-    )?;
+    let context = content_read::ContentReadContext::capture(path, &snapshot, None)?;
+    let status = context.bytes(&[
+        "-c",
+        "status.renames=false",
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--ignore-submodules=all",
+    ])?;
     let mut files = vec![];
     for row in status.split(|v| *v == 0).filter(|v| !v.is_empty()) {
         ensure!(row.len() >= 4, "invalid_status");
@@ -646,6 +699,7 @@ pub fn view(path: &Path) -> Result<RepoView> {
         snapshot == snapshot_with_scope(path, false, true)?,
         "stale_read_snapshot"
     );
+    context.validate()?;
     let conflict = match no_conflicts(path) {
         Ok(()) => false,
         Err(error)
@@ -844,6 +898,9 @@ pub fn stash_diff(path: &Path, requested_oid: &str, file: &str) -> Result<Diff> 
 }
 
 pub fn diff(path: &Path, file: &str, staged: bool) -> Result<Diff> {
+    with_deadline(READ_PHASE_TIMEOUT, || diff_inner(path, file, staged))
+}
+fn diff_inner(path: &Path, file: &str, staged: bool) -> Result<Diff> {
     safe_relative(file)?;
     let snap = snapshot_with_scope(path, false, true)?;
     // A literal Git pathspec can still select a whole directory. Bind the
@@ -881,10 +938,11 @@ pub fn diff(path: &Path, file: &str, staged: bool) -> Result<Diff> {
         args.push("--cached");
     }
     args.extend(["--", file]);
-    let mut bytes = git_bytes(path, &args)?;
+    let context = content_read::ContentReadContext::capture(path, &snap, Some(file))?;
+    let mut bytes = context.bytes(&args)?;
     if !staged
         && bytes.is_empty()
-        && let Some(preview) = file_staging::untracked_preview(path, file, &snap)?
+        && let Some(preview) = file_staging::untracked_preview(path, file, &snap, &context)?
     {
         bytes = preview;
     }
@@ -901,6 +959,7 @@ pub fn diff(path: &Path, file: &str, staged: bool) -> Result<Diff> {
         snap == snapshot_with_scope(path, false, true)?,
         "stale_read_snapshot"
     );
+    context.validate()?;
     let mut diff = parse_diff(text, digest(&snap)?, file, staged, !invalid_encoding);
     if invalid_encoding {
         diff.encoding_warning = Some("UTF-8로 읽을 수 없는 문자를 대체해 표시했습니다. 부분 스테이징은 지원하지 않습니다. 파일 전체 스테이징은 원본 바이트를 사용하므로 정확한 인코딩을 확인하세요.".into());

@@ -18,11 +18,11 @@ A native macOS Git app for reviewing work across repositories and worktrees.
 
 ## macOS에 설치하기
 
-**[Apple Silicon용 River 0.1.0-alpha.9 다운로드](https://github.com/ictechgy/river/releases/download/v0.1.0-alpha.9/River-0.1.0-alpha.9-macos-arm64.dmg)** · [릴리스 정보와 체크섬](https://github.com/ictechgy/river/releases/tag/v0.1.0-alpha.9)
+**[Apple Silicon용 River 0.1.0-alpha.10 다운로드](https://github.com/ictechgy/river/releases/download/v0.1.0-alpha.10/River-0.1.0-alpha.10-macos-arm64.dmg)** · [릴리스 정보와 체크섬](https://github.com/ictechgy/river/releases/tag/v0.1.0-alpha.10)
 
 - **Apple Silicon(arm64) 전용입니다.** 이번 릴리스에는 Intel 빌드가 없습니다.
 - **선언된 지원 대상은 macOS 14 이상입니다.** 실행 검증은 macOS 27.0.1에서만 했으며, 이전 버전에서의 호환성은 아직 확인하지 않았습니다.
-- **Apple 명령줄 Git이 필요합니다.** 원격 기능은 Git 2.41 이상, 일반 파일의 전체 스테이징은 격리된 속성 변환을 위해 Git 2.42 이상을 요구합니다. `/usr/bin/git --version`이 동작하지 않으면 `xcode-select --install`로 Apple의 [Command Line Tools](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools)를 설치하세요. 내장 예제의 준비 스크립트에는 `python3`도 필요합니다. 앱과 엔진이 함께 들어 있으므로 다운로드한 앱을 쓰기 위해 Rust·Swift·Node를 설치하거나 소스를 빌드할 필요는 없습니다.
+- **Apple 명령줄 Git이 필요합니다.** 상태·Diff·Git 위생 검사를 격리해 실행하려면 Git 2.43 이상이 필요합니다. `/usr/bin/git --version`이 동작하지 않으면 `xcode-select --install`로 Apple의 [Command Line Tools](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools)를 설치하세요. 내장 예제의 준비 스크립트에는 `python3`도 필요합니다. 앱과 엔진이 함께 들어 있으므로 다운로드한 앱을 쓰기 위해 Rust·Swift·Node를 설치하거나 소스를 빌드할 필요는 없습니다.
 
 1. `.dmg` 파일을 다운로드해 엽니다.
 2. **River.app**을 **응용 프로그램(Applications)** 폴더로 끌어 놓습니다.
@@ -31,7 +31,7 @@ A native macOS Git app for reviewing work across repositories and worktrees.
 
 **업데이트:** alpha.6부터 새 버전을 자동 확인합니다. **River → 업데이트 확인…** 또는 **설정 → 업데이트**에서 직접 확인하거나 자동 확인을 끌 수 있습니다. 다운로드·설치·재시작은 사용자가 선택합니다. 재시작 전에 임시 입력을 저장하세요. 진행 중 작업이 있으면 설치를 미룹니다. **alpha.5 이하는 현재 버전을 한 번 직접 설치해야 합니다.** [업데이트 안내](docs/updates.md)를 참고하세요.
 
-앱·내장 엔진·DMG의 Developer ID 서명을 검증했습니다. 이번 알파는 **Apple 공증(notarization)을 받지 않아** 첫 실행이 차단될 수 있습니다. 자세한 검증 상태는 [릴리스 정보](docs/releases/v0.1.0-alpha.9.md)를 확인하세요.
+앱·내장 엔진·DMG의 Developer ID 서명을 검증했습니다. 이번 알파는 **Apple 공증(notarization)을 받지 않아** 첫 실행이 차단될 수 있습니다. 자세한 검증 상태는 [릴리스 정보](docs/releases/v0.1.0-alpha.10.md)를 확인하세요.
 
 macOS가 개발자를 확인할 수 없거나 앱을 검사할 수 없다는 이유로 실행을 막으면 릴리스 상태와 다운로드 출처를 먼저 확인하세요. 계속 진행하기로 했다면 River 실행을 한 번 시도한 뒤 **시스템 설정 → 개인정보 보호 및 보안 → 확인 없이 열기(Open Anyway)**에서 허용하고 **열기**를 확인합니다. 자세한 절차는 [Apple 안내](https://support.apple.com/en-us/102445)를 따르세요.
 
@@ -131,11 +131,11 @@ macOS가 개발자를 확인할 수 없거나 앱을 검사할 수 없다는 이
 
 - **지원 전:** 제공자 OAuth·PR API, 강제 push, 브랜치 checkout·이름 변경·삭제(생성은 Task 준비로만 가능), 변경 되돌리기(discard), merge·rebase·충돌 해결 UI, history rewriting, 임의 행 스테이징, Stash 적용·삭제, 자동 AI 실행·CI·빌드·병합, Windows/Linux GUI.
 - **원격 범위:** SSH/HTTPS를 지원합니다. 사용자 SSH 설정·대화형 인증·임의 credential helper·파일 경로 원격·URL 재작성·복수 endpoint·partial clone은 지원하지 않습니다. Pull은 깨끗한 폴더에서 빨리 감기로만 실행하며 분기된 이력은 거부합니다. [정확한 정책과 복구 동작](docs/remotes.md)을 확인하세요.
-- **Git 실행 정책:** fsmonitor·hook·외부 서명 프로그램을 실행하지 않습니다. 앱에서 만든 커밋에는 Git hook이 적용되지 않으며 서명도 하지 않습니다(`commit.gpgsign=true`인 경우 포함). 외부 clean/smudge/process 명령이 설정되면 상태·Diff 조회와 작업 준비·쓰기가 거부됩니다. 해당 저장소가 LFS를 쓰지 않아도 전역 LFS 필터 명령이 있으면 같은 제한을 받습니다. 일반 상태·Diff 조회는 Git 설정의 동시 변경까지 격리하지 않습니다. [실행 경계](docs/limitations.md)를 참고하세요. 저장소 안에서 `git config --show-origin --get-regexp '^filter\..*\.(clean|smudge|process)$'`로 값이 있는 항목을 확인할 수 있습니다.
+- **Git 실행 정책:** fsmonitor·hook·외부 서명 프로그램을 실행하지 않습니다. 앱에서 만든 커밋에는 Git hook이 적용되지 않으며 서명도 하지 않습니다(`commit.gpgsign=true`인 경우 포함). 외부 clean/smudge/process 명령이 설정되면 상태·Diff 조회와 작업 준비·쓰기가 거부됩니다. 해당 저장소가 LFS를 쓰지 않아도 전역 LFS 필터 명령이 있으면 같은 제한을 받습니다. 상태·Diff·Git 위생 검사는 별도 Git 메타데이터·index·고정 속성을 사용해 외부 필터 명령이 내용 조회에 들어오지 않게 합니다. 작업 폴더 생성과 커밋은 실제 설정을 사전 확인하는 방식이므로, 쓰기 중 설정의 동시 변경까지 격리하지는 않습니다. [실행 경계](docs/limitations.md)를 참고하세요. 저장소 안에서 `git config --show-origin --get-regexp '^filter\..*\.(clean|smudge|process)$'`로 값이 있는 항목을 확인할 수 있습니다.
 - **준비와 쓰기:** 원래 checkout을 바꾸지 않고 작업용 폴더를 준비합니다. source snapshot이나 신뢰 기준이 바뀌면 중단하며, 조용히 재계획하거나 reset/clean으로 복구하지 않습니다. Recipe는 OS 보안 sandbox가 아닙니다.
 - **스테이징과 자원:** 파일 전체 스테이징은 지원 엔진에서 파일당 32 MiB·index 64 MiB까지이며, 충돌·서브모듈·특수 파일·안전하지 않은 경로·지원하지 않는 변환 속성은 거부합니다. 텍스트 hunk 지원 범위는 더 좁습니다. 그래프·브랜치 기록은 최근 최대 80개 커밋, Diff 표시는 5,000줄·512 KiB로 제한합니다. 대형 저장소의 속도·메모리·에너지는 아직 계측하지 않았습니다.
 - **복구와 새로고침:** 준비 요청의 응답을 잃으면 앱 세션에 원래 프로젝트 안내가 남습니다. 작업을 반복하기 전에 해당 프로젝트의 작업 목록과 Git 상태를 확인해야 하며, 안내는 앱 재시작 뒤 복원되지 않습니다. Git 속성·Diff 설정을 바꾼 뒤에는 새로고침하세요. 이미 엔진에서 시작한 읽기는 클라이언트가 취소해도 계속될 수 있습니다.
-- **배포와 검증:** 현재 사전 릴리스 DMG는 Apple Silicon용입니다. 서명·notarization 상태는 [릴리스 정보](docs/releases/v0.1.0-alpha.9.md)를 확인하세요. Intel 빌드, macOS 14–26 실행, OS 입력 및 VoiceOver 검증은 완료하지 않았습니다.
+- **배포와 검증:** 현재 사전 릴리스 DMG는 Apple Silicon용입니다. 서명·notarization 상태는 [릴리스 정보](docs/releases/v0.1.0-alpha.10.md)를 확인하세요. Intel 빌드, macOS 14–26 실행, OS 입력 및 VoiceOver 검증은 완료하지 않았습니다.
 
 자세한 범위와 알려진 문제는 [현재 제한](docs/limitations.md)을 확인하세요.
 
@@ -164,7 +164,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 swift test --package-path apps/macos
 ```
 
-검증에는 Rust·Swift 테스트, Rust 포맷·Clippy 검사와 실제 Rust 서비스에 연결한 네이티브 합성 시나리오를 사용합니다. 시나리오는 파일 전체 스테이징·작업 정보·보고를 다루며, 화면은 SwiftUI/AppKit으로 offscreen 렌더링합니다. 릴리스별 결과는 [릴리스 정보](docs/releases/v0.1.0-alpha.9.md)에 기록합니다. 변경하지 않은 패키징·업데이트 Python 코드는 alpha.6의 **56개 테스트** 검증을 유지하며, 이번에 바꾼 네이티브 미리보기 실행기는 별도로 검증합니다. 공개 GitHub·GitLab clone·fetch 결과는 변경하지 않은 원격 코드의 이전 검증입니다. CI는 아직 없으며 실제 사용자 저장소, OS가 진행하는 업데이트 설치·재시작, 대형 저장소 성능을 검증한 결과는 아닙니다.
+검증에는 Rust·Swift 테스트, Rust 포맷·Clippy 검사와 실제 Rust 서비스에 연결한 네이티브 합성 시나리오를 사용합니다. 시나리오는 파일 전체 스테이징·작업 정보·보고를 다루며, 화면은 SwiftUI/AppKit으로 offscreen 렌더링합니다. 릴리스별 결과는 [릴리스 정보](docs/releases/v0.1.0-alpha.10.md)에 기록합니다. 이번 릴리스에서는 패키징·업데이트 Python 테스트도 다시 실행합니다. 공개 GitHub·GitLab clone·fetch 결과는 이전 검증이며, 원격 작업의 폴더 상태 확인은 새 격리 조회와 해당 회귀 테스트를 사용합니다. CI는 아직 없으며 실제 사용자 저장소, OS가 진행하는 업데이트 설치·재시작, 대형 저장소 성능을 검증한 결과는 아닙니다.
 
 - [첫 프로젝트 커밋과 AI 작업 흐름](docs/getting-started.md)
 - [개발 환경·검증 명령](docs/development.md)

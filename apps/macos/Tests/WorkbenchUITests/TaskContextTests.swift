@@ -65,6 +65,8 @@ private func receipt(kind: String = "git_check", after: Any = "code-1") throws -
   #expect(UserFacingFailure.message(failure).contains("완료 조건"))
   let blockedPull = UserFacingFailure.message(ServiceFailure(code: "remote_pull_blocked", message: "MERGE_HEAD"))
   #expect(blockedPull.contains("Pull하지 않았습니다")); #expect(blockedPull.contains("진행 중 Git 작업"))
+  let gitUpgrade = UserFacingFailure.message(ServiceFailure(code: "content_read_git_upgrade_required", message: "old Git"))
+  #expect(gitUpgrade.contains("2.43")); #expect(gitUpgrade.contains("Command Line Tools"))
   for action in ["수신", "전송"] {
     #expect(UserFacingFailure.message(TransportFailure.system(action, EAGAIN)).contains("응답이 지연"))
   }

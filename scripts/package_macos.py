@@ -26,7 +26,7 @@ English
 2. Eject this disk image, then open River from Applications.
 Requires macOS 14 or later. This is an early alpha release.
 Apple command-line Git is required. Check it with /usr/bin/git --version.
-Remote operations require Apple Git 2.41 or later.
+Reading status and diffs requires Apple Git 2.43 or later.
 If Git is unavailable, run xcode-select --install in Terminal to install Apple's
 Command Line Tools. Full Xcode is not required to use River.
 The built-in example also requires python3 for its preparation recipes.
@@ -37,7 +37,7 @@ Command Line Tools: https://developer.apple.com/documentation/xcode/installing-t
 2. 이 디스크 이미지를 추출한 뒤 응용 프로그램 폴더에서 River를 여세요.
 macOS 14 이상이 필요합니다. 초기 알파 릴리스입니다.
 Apple 명령줄 Git이 필요합니다. /usr/bin/git --version으로 확인하세요.
-원격 작업에는 Apple Git 2.41 이상이 필요합니다.
+상태와 Diff 조회에는 Apple Git 2.43 이상이 필요합니다.
 Git을 사용할 수 없으면 터미널에서 xcode-select --install을 실행해 Apple의
 Command Line Tools를 설치하세요. River 사용에 전체 Xcode는 필요하지 않습니다.
 앱의 기본 예제는 준비 레시피를 실행할 때 python3도 필요합니다.
@@ -81,9 +81,27 @@ def source_snapshot(root=None):
     environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
 
     def git(*argv, **kwargs):
-        return run("git", "-C", root, *argv, cwd=root, env=environment, **kwargs)
+        # diff has a separate refresh setting in addition to optional status locks.
+        return run("git", "--no-optional-locks", "-c", "diff.autoRefreshIndex=false", "-C", root,
+                   *argv, cwd=root, env=environment, **kwargs)
+
+    def reject_suppressed_index_entries():
+        # status/diff can trust these flags instead of inspecting worktree bytes.
+        # Reject them on every tracked path; never clear flags or rewrite the index.
+        records = git("ls-files", "-v", "-z", capture_output=True).stdout
+        if records and not records.endswith(b"\0"):
+            raise ValueError("invalid tracked index listing while capturing build provenance")
+        for record in records.split(b"\0")[:-1]:
+            tag = record[:1]
+            if (len(record) < 3 or record[1:2] != b" "
+                    or tag.upper() not in {b"H", b"S", b"M", b"R", b"C", b"K", b"?"}):
+                raise ValueError("invalid tracked index listing while capturing build provenance")
+            if tag.islower() or tag == b"S":
+                raise ValueError("release packaging cannot attest tracked files marked assume-unchanged or "
+                                 "skip-worktree; review index flags with git ls-files -v before retrying")
 
     head = git("rev-parse", "HEAD", capture_output=True, text=True).stdout.strip()
+    reject_suppressed_index_entries()
     status = git("status", "--porcelain=v1", "-z", "--untracked-files=no",
                  capture_output=True).stdout
     patch = git("diff", "--binary", "--no-ext-diff", "--no-textconv", "HEAD", "--",
@@ -96,6 +114,7 @@ def source_snapshot(root=None):
                     capture_output=True).stdout
     if git("rev-parse", "HEAD", capture_output=True, text=True).stdout.strip() != head:
         raise ValueError("source HEAD changed while capturing build provenance")
+    reject_suppressed_index_entries()
     return {"kind": "clean-git-build", "git_commit": head, "tracked_status": os.fsdecode(status),
             "tracked_patch_sha256": hashlib.sha256(patch).hexdigest(),
             "untracked_runtime_files": [os.fsdecode(path) for path in untracked.split(b"\0") if path]}

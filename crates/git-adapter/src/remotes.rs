@@ -530,20 +530,7 @@ fn state_policy(path: &Path, policy: Policy) -> Result<RemoteState> {
             }
         }
     }
-    let clean = run_local(
-        path,
-        &[
-            "status",
-            "--porcelain=v1",
-            "-z",
-            "--untracked-files=normal",
-            "--ignore-submodules=none",
-        ],
-        false,
-    )?
-    .stdout
-    .is_empty()
-        && super::no_conflicts(path).is_ok();
+    let clean = super::status_bytes(path)?.is_empty() && super::no_conflicts(path).is_ok();
     let repository_path = fs::canonicalize(path)?
         .to_str()
         .context("unsupported_repo_path_encoding")?

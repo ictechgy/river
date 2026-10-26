@@ -8,7 +8,8 @@ struct DiffWorkspace: View {
   @State private var previousReading: PresentedReading?
   @State private var request: HunkRequest?
   var body: some View {
-    VStack(spacing: 0) {
+    let selectionPresentation = DiffSelectionPresentation(store)
+    return VStack(spacing: 0) {
       HStack(spacing: 10) {
         Text(
           DiffLines.displayText(
@@ -59,9 +60,7 @@ struct DiffWorkspace: View {
             maxWidth: .infinity, alignment: .leading)
         Divider()
       }
-      if store.selectionCheckFailed && (store.repository == nil || store.diff == nil)
-        && !store.isViewingStash
-      {
+      if selectionPresentation == .validationFailure {
         ContentUnavailableView {
           Label("현재 변경을 확인하지 못했습니다", systemImage: "exclamationmark.triangle")
         } description: {
@@ -69,7 +68,7 @@ struct DiffWorkspace: View {
         } actions: {
           Button("새로고침") { Task { await store.refresh(forceDiff: true) } }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
-      } else if store.pendingWorktree && !store.isViewingStash {
+      } else if selectionPresentation == .pendingWorktree {
         ContentUnavailableView(
           store.pendingWorktreeTitle, systemImage: "externaldrive.badge.plus",
           description: Text(store.pendingWorktreeHint)
@@ -83,6 +82,10 @@ struct DiffWorkspace: View {
         } actions: {
           Button("다시 시도") { Task { await store.retryDiff() } }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
+      } else if selectionPresentation == .initialLoading {
+        ProgressView("현재 폴더의 변경을 확인하는 중…")
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .accessibilityIdentifier("workbench.initial-diff-loading")
       } else if let diff = store.diff, diff.displayLimitExceeded {
         ContentUnavailableView(
           "이 변경은 Git에서 확인해 주세요", systemImage: "doc.text.magnifyingglass",

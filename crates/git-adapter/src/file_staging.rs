@@ -24,6 +24,7 @@ pub(super) fn untracked_preview(
     path: &Path,
     file: &str,
     reviewed: &Snapshot,
+    context: &crate::content_read::ContentReadContext,
 ) -> Result<Option<Vec<u8>>> {
     if index_entry(
         &git_bytes(path, &["ls-files", "--stage", "-z", "--", file])?,
@@ -54,24 +55,19 @@ pub(super) fn untracked_preview(
         .path()
         .to_str()
         .context("unsupported_filename_encoding")?;
-    no_external_filters(path)?;
-    let output = process::run(
-        git_command(
-            path,
-            &[
-                "diff",
-                "--no-index",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--no-renames",
-                "--unified=3",
-                "--",
-                "/dev/null",
-                captured_path,
-            ],
-        ),
+    let output = context.output(
+        &[
+            "diff",
+            "--no-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            "--unified=3",
+            "--",
+            "/dev/null",
+            captured_path,
+        ],
         None,
-        Duration::from_secs(15),
         8 * 1024 * 1024,
     )?;
     ensure!(

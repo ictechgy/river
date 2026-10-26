@@ -50,6 +50,7 @@ public final class TaskContextStore: ObservableObject {
   private var drafts: [String: ContextDraft] = [:]
   private var loading = false
   private var lastReadFailure: String?
+  private var prefersWorkflowReads = false
   public var identity: String { token.uuidString }
   public var supportsWorkflow: Bool { bundle?.workflowVersion == 2 && workflow != nil }
   // Draft representation survives capability changes so retained input stays inspectable.
@@ -73,6 +74,7 @@ public final class TaskContextStore: ObservableObject {
     token = UUID(); scopeToken = UUID(); activeWork = nil
     client = nil; location = nil; contextOperationID = nil; operation = nil; scopeResolved = false; scope = ""; bundle = nil
     workflow = nil; workflowMessage = nil
+    prefersWorkflowReads = false
     draft = nil; loaded = false; message = nil; working = false; loading = false
   }
   private func rememberDraft() {
@@ -101,7 +103,9 @@ public final class TaskContextStore: ObservableObject {
       matchingOperation.map { "task:\($0.taskId)" } ?? "unresolved-operation:\(id)"
     } ?? "repo:\(location.repoId)"
     let key = workspace + ":" + scopeKey
-    if key != scope || location != self.location || resolved != scopeResolved {
+    let clientChanged = self.client !== client
+    if clientChanged { prefersWorkflowReads = false }
+    if clientChanged || key != scope || location != self.location || resolved != scopeResolved {
       rememberDraft()
       token = UUID(); loaded = false; loading = false; message = nil
       if key != scope {
@@ -135,12 +139,17 @@ public final class TaskContextStore: ObservableObject {
   private func acceptWorkflow(_ result: TaskWorkflowBundle, replaceDraft: Bool = false) {
     guard result.context.revision >= (bundle?.context.revision ?? 0) else { return }
     let dirty = isDirty || (bundle == nil && draft != nil)
-    workflow = result
-    bundle = TaskContextBundle(context: result.context, verifications: result.verifications, workflowVersion: 2)
-    if !dirty || replaceDraft { draft = ContextDraft(result.context, workflow: result.workflow) }
-    workflowMessage = result.canWrite ? nil
+    if workflow != result { workflow = result }
+    let context = TaskContextBundle(context: result.context, verifications: result.verifications, workflowVersion: 2)
+    if bundle != context { bundle = context }
+    if !dirty || replaceDraft {
+      let saved = ContextDraft(result.context, workflow: result.workflow)
+      if draft != saved { draft = saved }
+    }
+    let compatibilityMessage = result.canWrite ? nil
       : "이전 버전에서 작업 기록이 바뀌었습니다. 조건 연결 이력을 보존한 채 현재 기록으로 다시 시작할 수 있습니다."
-    loaded = scopeResolved
+    if workflowMessage != compatibilityMessage { workflowMessage = compatibilityMessage }
+    if loaded != scopeResolved { loaded = scopeResolved }
   }
   public func refresh() async {
     guard let client, scopeResolved, !loading, !working else { return }
@@ -149,18 +158,21 @@ public final class TaskContextStore: ObservableObject {
     let epoch = writeEpoch
     defer { if version == token { loading = false } }
     do {
-      let result: TaskContextBundle = try await client.call("get_task_context", params: params())
-      guard version == token && epoch == writeEpoch else { return }
-      if result.workflowVersion == 2 {
-        let rich: TaskWorkflowBundle = try await client.call("get_task_workflow", params: params())
-        guard version == token && epoch == writeEpoch else { return }
-        acceptWorkflow(rich)
+      let values = params()
+      if prefersWorkflowReads {
+        do {
+          let rich: TaskWorkflowBundle = try await client.call("get_task_workflow", params: values)
+          guard version == token && epoch == writeEpoch else { return }
+          acceptWorkflow(rich)
+        } catch let failure as ServiceFailure where failure.code == "unknown_method" {
+          guard version == token && epoch == writeEpoch else { return }
+          prefersWorkflowReads = false
+          try await discoverContext(client: client, values: values, version: version, epoch: epoch)
+        }
       } else {
-        let preserveDraft = isDirty || (bundle == nil && draft != nil)
-        workflow = nil
-        workflowMessage = "연결된 엔진은 조건별 근거 연결을 지원하지 않습니다. 기존 작업 정보와 기록은 사용할 수 있습니다."
-        accept(result, preserveDraft: preserveDraft)
+        try await discoverContext(client: client, values: values, version: version, epoch: epoch)
       }
+      guard version == token && epoch == writeEpoch else { return }
       if message == lastReadFailure && lastReadFailure != nil { message = nil }
       lastReadFailure = nil
     } catch {
@@ -170,6 +182,22 @@ public final class TaskContextStore: ObservableObject {
         ? "현재 엔진은 작업 정보를 지원하지 않습니다. 앱과 엔진을 업데이트한 뒤 다시 연결해 주세요."
         : "작업 정보를 읽지 못했습니다. 새로고침해 주세요."
       lastReadFailure = message
+    }
+  }
+  private func discoverContext(client: ServiceClient, values: [String: JSONValue], version: UUID, epoch: UUID) async throws {
+    let result: TaskContextBundle = try await client.call("get_task_context", params: values)
+    guard version == token && epoch == writeEpoch else { return }
+    if result.workflowVersion == 2 {
+      let rich: TaskWorkflowBundle = try await client.call("get_task_workflow", params: values)
+      guard version == token && epoch == writeEpoch else { return }
+      prefersWorkflowReads = true
+      acceptWorkflow(rich)
+    } else {
+      let preserveDraft = isDirty || (bundle == nil && draft != nil)
+      if workflow != nil { workflow = nil }
+      let explanation = "연결된 엔진은 조건별 근거 연결을 지원하지 않습니다. 기존 작업 정보와 기록은 사용할 수 있습니다."
+      if workflowMessage != explanation { workflowMessage = explanation }
+      accept(result, preserveDraft: preserveDraft)
     }
   }
   func reloadDraft() {

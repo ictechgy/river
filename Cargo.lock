@@ -670,6 +670,8 @@ dependencies = [
  "anyhow",
  "libc",
  "serde_json",
+ "sha2",
+ "tempfile",
  "workbench-domain",
  "workbench-git",
 ]

@@ -7,5 +7,8 @@ license.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 libc.workspace = true
+sha2.workspace = true
 workbench-domain = { path = "../domain" }
 workbench-git = { path = "../git-adapter" }
+[dev-dependencies]
+tempfile.workspace = true

@@ -14,11 +14,11 @@ The app UI and detailed guides are currently in Korean. English translations of 
 
 ## Install on macOS
 
-**[Download River 0.1.0-alpha.9 for Apple Silicon](https://github.com/ictechgy/river/releases/download/v0.1.0-alpha.9/River-0.1.0-alpha.9-macos-arm64.dmg)** · [Release notes and checksums](https://github.com/ictechgy/river/releases/tag/v0.1.0-alpha.9)
+**[Download River 0.1.0-alpha.10 for Apple Silicon](https://github.com/ictechgy/river/releases/download/v0.1.0-alpha.10/River-0.1.0-alpha.10-macos-arm64.dmg)** · [Release notes and checksums](https://github.com/ictechgy/river/releases/tag/v0.1.0-alpha.10)
 
 - **Apple Silicon (arm64) only.** This release does not include an Intel build.
 - **macOS 14 or later is the declared target.** Runtime testing has only covered macOS 27.0.1; compatibility with older supported versions has not been verified.
-- **Apple command-line Git is required.** Remote operations need Git 2.41 or later; whole-file staging of regular files needs Git 2.42 or later for isolated attribute conversion. If `/usr/bin/git --version` does not work, install Apple's [Command Line Tools](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools) with `xcode-select --install`. The built-in example also requires `python3` for its preparation recipes. River includes its app and engine; Rust, Swift, Node, and a source build are not required to use the download.
+- **Apple command-line Git is required.** Git 2.43 or later is required for isolated status, Diff and Git hygiene checks. If `/usr/bin/git --version` does not work, install Apple's [Command Line Tools](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools) with `xcode-select --install`. The built-in example also requires `python3` for its preparation recipes. River includes its app and engine; Rust, Swift, Node, and a source build are not required to use the download.
 
 1. Download and open the `.dmg` file.
 2. Drag **River.app** into **Applications**.
@@ -27,7 +27,7 @@ The app UI and detailed guides are currently in Korean. English translations of 
 
 **Updates:** Starting with alpha.6, River checks for new releases automatically. Use **River → 업데이트 확인…** or **Settings → 업데이트** to check manually or disable automatic checks. Download, installation and restart require your choice. Save session drafts before restarting; active work postpones installation. **Alpha.5 and earlier need one manual installation of the current release.** See [updates](docs/updates.md).
 
-The app, bundled engine, and DMG have verified Developer ID signatures. This alpha is **not notarized by Apple**, so macOS may block its first launch. See the [release notes](docs/releases/v0.1.0-alpha.9.md) for verification details.
+The app, bundled engine, and DMG have verified Developer ID signatures. This alpha is **not notarized by Apple**, so macOS may block its first launch. See the [release notes](docs/releases/v0.1.0-alpha.10.md) for verification details.
 
 If macOS blocks opening because it cannot verify the developer or check the app, review the release status and source first. If you choose to continue, use **System Settings → Privacy & Security → Open Anyway** after attempting to open River, then confirm **Open**, as described in [Apple's guide](https://support.apple.com/en-us/102445).
 
@@ -127,11 +127,11 @@ Settings, recent projects, and the task journal live in `~/Library/Application S
 
 - **Not implemented:** Provider OAuth/PR APIs, force push, general branch checkout/rename/deletion (branches can be created only through task preparation), discard, merge/rebase/conflict-resolution UI, history rewriting, arbitrary-line staging, stash apply/delete, automatic AI calls, CI/build/merge execution, and Windows/Linux GUIs.
 - **Remote boundaries:** SSH/HTTPS only. Custom SSH configuration, interactive authentication, arbitrary credential helpers, filesystem remotes, URL rewrites, multiple endpoints and partial clones are unsupported. Pull requires a clean folder and a fast-forward; divergent history is rejected. See the [exact policy and recovery behavior](docs/remotes.md).
-- **Git execution policy:** The app does not run Git fsmonitor, hooks, or external signing programs. App-created commits do not run hooks and are unsigned, including when `commit.gpgsign=true`. Configured external clean/smudge/process commands cause status/diff reads, preparation, and writes to be rejected. Global LFS filter commands trigger this restriction even when the repository does not use LFS. General status/diff reads do not isolate concurrent Git configuration edits; see the [execution boundary](docs/limitations.md). In the repository, inspect configured commands with `git config --show-origin --get-regexp '^filter\..*\.(clean|smudge|process)$'`.
+- **Git execution policy:** The app does not run Git fsmonitor, hooks, or external signing programs. App-created commits do not run hooks and are unsigned, including when `commit.gpgsign=true`. Configured external clean/smudge/process commands cause status/diff reads, preparation, and writes to be rejected. Global LFS filter commands trigger this restriction even when the repository does not use LFS. Working-folder status, Diff and Git hygiene checks use private Git metadata, index and frozen attributes; executable filter definitions cannot enter those content reads. Worktree materialization and commit still use a preflight check against live configuration, so concurrent configuration edits remain outside that write boundary. See [limitations](docs/limitations.md). In the repository, inspect configured commands with `git config --show-origin --get-regexp '^filter\..*\.(clean|smudge|process)$'`.
 - **Preparation and writes:** Working directories are prepared without changing the original checkout. A changed source snapshot or trust basis stops execution; there is no silent replanning or recovery through reset/clean. Recipes are not an OS security sandbox.
 - **Staging and resources:** Selected-file staging is limited to 32 MiB per file and a 64 MiB index, requires a supporting engine, and rejects conflicts, submodules, special files, unsafe paths and unsupported conversion attributes. Text-hunk support is narrower. Graph and branch history show at most 80 recent commits. Diff display is capped at 5,000 lines and 512 KiB. Speed, memory, and energy use on large repositories have not been measured.
 - **Recovery and refresh:** Lost preparation responses leave an origin-project notice for the app session; check that project's task list and Git state before repeating work. These notices do not survive an app restart. Use Refresh after changing Git attributes or diff settings. A read already started in the engine may continue after the client cancels it.
-- **Distribution and validation:** The current prerelease DMG is for Apple Silicon. See its [release notes](docs/releases/v0.1.0-alpha.9.md) for signature and notarization status. Intel builds, runtime testing on macOS 14–26, OS-level input testing, and VoiceOver validation are not complete.
+- **Distribution and validation:** The current prerelease DMG is for Apple Silicon. See its [release notes](docs/releases/v0.1.0-alpha.10.md) for signature and notarization status. Intel builds, runtime testing on macOS 14–26, OS-level input testing, and VoiceOver validation are not complete.
 
 See [limitations and known issues (Korean)](docs/limitations.md) for details.
 
@@ -160,7 +160,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 swift test --package-path apps/macos
 ```
 
-The validation workflow uses Rust and Swift tests, Rust formatting and Clippy checks, and native synthetic scenarios against the real Rust service. Scenarios cover selected-file staging, task context and reports; screens are rendered offscreen with SwiftUI/AppKit. See the [release notes](docs/releases/v0.1.0-alpha.9.md) for release-specific results. The unchanged package/updater Python code retains alpha.6’s **56-test** validation; the changed native preview runner is validated separately. Earlier public GitHub/GitLab clone/fetch checks remain historical validation of unchanged remote code. There is no CI yet. These checks do not establish behavior on real user repositories, OS-driven update installation/relaunch, or performance on large repositories.
+The validation workflow uses Rust and Swift tests, Rust formatting and Clippy checks, and native synthetic scenarios against the real Rust service. Scenarios cover selected-file staging, task context and reports; screens are rendered offscreen with SwiftUI/AppKit. See the [release notes](docs/releases/v0.1.0-alpha.10.md) for release-specific results. The package/updater Python suite is rerun for this release. Previous public GitHub/GitLab clone/fetch checks are historical evidence; remote clean-folder status now also uses the isolated content-read context and its regression suite. There is no CI yet. These checks do not establish behavior on real user repositories, OS-driven update installation/relaunch, or performance on large repositories.
 
 Detailed guides are currently in Korean:
 

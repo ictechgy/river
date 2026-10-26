@@ -338,7 +338,7 @@ impl ContextFiles {
         })
     }
 }
-fn attribute_path(path: &Path, variable: &str) -> Result<PathBuf> {
+pub(super) fn attribute_path(path: &Path, variable: &str) -> Result<PathBuf> {
     let output = process::run(
         git_command(path, &["var", variable]),
         None,
@@ -381,7 +381,7 @@ fn index_attribute(path: &Path, relative: &Path) -> Result<Option<Blob>> {
         bytes: source_blob(path, fields[1], ATTRIBUTE_LIMIT)?,
     }))
 }
-fn source_blob(path: &Path, oid: &str, limit: usize) -> Result<Vec<u8>> {
+pub(super) fn source_blob(path: &Path, oid: &str, limit: usize) -> Result<Vec<u8>> {
     let output = process::run(
         git_command(path, &["cat-file", "blob", oid]),
         None,

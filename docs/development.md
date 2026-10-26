@@ -12,27 +12,29 @@ open "build/macos/River.app"
 기본값은 debug 빌드와 ad-hoc 개발용 서명입니다. 버전과 build 번호를 지정한 로컬 release 빌드는 아래와 같습니다. 앱 빌드만으로 DMG 생성·notarization·배포 업로드를 수행하지 않습니다.
 
 ```sh
-python3 scripts/build_macos.py --configuration release --version 0.1.0-alpha.6 --build-number 7
+python3 scripts/build_macos.py --configuration release --version 0.1.0-alpha.10 --build-number 11
 ```
 
-`--output`으로 앱 번들의 출력 경로를 지정할 수 있습니다. `--sign-identity`를 생략하면 ad-hoc 서명을 사용합니다. 버전 `0.1.0-alpha.6`은 앱의 `RiverReleaseVersion`, 숫자 부분 `0.1.0`은 `CFBundleShortVersionString`, build 번호 `7`는 `CFBundleVersion`에 기록합니다.
+`--output`으로 앱 번들의 출력 경로를 지정할 수 있습니다. `--sign-identity`를 생략하면 ad-hoc 서명을 사용합니다. 버전 `0.1.0-alpha.10`은 앱의 `RiverReleaseVersion`, 숫자 부분 `0.1.0`은 `CFBundleShortVersionString`, build 번호 `11`는 `CFBundleVersion`에 기록합니다.
 
 ## DMG 패키징과 배포
 
-일반 설치 방법은 [README](../README.md#install-on-macos), 현재 공개 아티팩트의 상태는 [0.1.0-alpha.6 릴리스 정보](releases/v0.1.0-alpha.6.md)에 있습니다. 개발자가 로컬에서 만드는 ad-hoc 빌드와 공개 릴리스의 서명·notarization 상태는 별도로 확인하세요.
+일반 설치 방법은 [README](../README.md#install-on-macos), 현재 공개 아티팩트의 상태는 [0.1.0-alpha.10 릴리스 정보](releases/v0.1.0-alpha.10.md)에 있습니다. 개발자가 로컬에서 만드는 ad-hoc 빌드와 공개 릴리스의 서명·notarization 상태는 별도로 확인하세요.
 
 패키징 스크립트는 별도의 release 빌드를 만들고 앱과 내장 엔진의 architecture가 같은지 확인합니다. 새 빌드는 커밋한 깨끗한 소스에서 실행해야 합니다. 추적 파일의 변경, 런타임 소스 폴더와 `.cargo`의 미추적 파일, 빌드 중 소스 변경이 있으면 중단합니다. 같은 출력 폴더의 동시 패키징은 잠금으로 거부합니다. `--version`과 `--build-number`는 패키징할 때 매번 지정해야 합니다. 기본 출력 위치는 `dist/`입니다. Cargo가 이번 빌드에서 보고한 실행 파일을 내장하므로 target 폴더·target triple 설정을 따르며, release 빌드는 `--locked`로 의존성 잠금을 유지합니다. manifest의 소스 provenance는 저장소 커밋과 소스 변경 여부를 기록하며, 설치한 컴파일러·사용자 전역 Cargo 설정까지 재현성을 보증하지 않습니다. Cargo workspace 버전은 내부 crate 버전이고 배포 앱의 버전·build 번호는 명시한 plist 값으로 별도 관리합니다.
 
+전체 추적 파일 중 `assume-unchanged` 또는 `skip-worktree`가 설정된 경로가 있으면 파일 내용이 HEAD와 같아도 패키징을 중단합니다. 이 플래그는 `git status`와 `git diff`에서 실제 파일 변경을 숨길 수 있으므로 빌드 전과 빌드 후 모두 확인합니다. 오류가 나면 `git ls-files -v`로 확인하세요. 경로 앞의 소문자 표시는 `assume-unchanged`, `S` 또는 `s`는 `skip-worktree`를 뜻합니다. 해당 파일의 로컬 내용을 먼저 검토하고 보관한 뒤 플래그를 해제할지, 별도의 깨끗한 checkout에서 릴리스를 만들지 결정하세요. 패키징 스크립트는 파일 내용이나 index 플래그를 바꾸지 않으며 Git의 선택적 index 갱신도 수행하지 않습니다.
+
 ```sh
-python3 scripts/package_macos.py --version 0.1.0-alpha.6 --build-number 7
+python3 scripts/package_macos.py --version 0.1.0-alpha.10 --build-number 11
 ```
 
 Apple Silicon 호스트에서의 출력은 다음과 같습니다. x86_64나 universal2는 실제 앱·엔진 바이너리가 해당 architecture일 때만 그 이름으로 표시하며, 현재 공개 릴리스는 arm64만 제공합니다.
 
 ```text
-dist/River-0.1.0-alpha.6-macos-arm64.dmg
-dist/River-0.1.0-alpha.6-macos-arm64.dmg.sha256
-dist/River-0.1.0-alpha.6-macos-arm64.manifest.json
+dist/River-0.1.0-alpha.10-macos-arm64.dmg
+dist/River-0.1.0-alpha.10-macos-arm64.dmg.sha256
+dist/River-0.1.0-alpha.10-macos-arm64.manifest.json
 ```
 
 DMG에는 `River.app`과 `Applications` 링크가 들어 있습니다. `--output-dir`로 출력 폴더를 바꿀 수 있습니다. 이미 빌드한 release 앱은 `--app /absolute/path/River.app`으로 지정할 수 있지만 요청 버전·build 번호가 일치해야 하며, 이 옵션은 앱을 다시 서명하거나 그 앱의 소스 커밋을 보증하지 않습니다. 이때 `--sign-identity`를 함께 지정하면 같은 개발 팀의 인증서로 DMG만 서명합니다.
@@ -41,7 +43,7 @@ Developer ID로 서명하려면 로컬 키체인의 인증서 이름을 지정�
 
 ```sh
 python3 scripts/package_macos.py \
-  --version 0.1.0-alpha.6 --build-number 7 \
+  --version 0.1.0-alpha.10 --build-number 11 \
   --sign-identity "Developer ID Application: YOUR NAME (TEAMID)"
 ```
 
@@ -50,9 +52,9 @@ Apple notarization을 수행할 수 있는 환경에서는 `--notary-profile riv
 DMG를 공개하기 전에는 만들어진 파일 자체를 검증합니다. 이 명령은 이미지를 검사하고 읽기 전용으로 마운트한 뒤 앱을 복사해 서명을 확인합니다.
 
 ```sh
-python3 scripts/package_macos.py --verify-dmg dist/River-0.1.0-alpha.6-macos-arm64.dmg
+python3 scripts/package_macos.py --verify-dmg dist/River-0.1.0-alpha.10-macos-arm64.dmg
 cd dist
-shasum -a 256 -c River-0.1.0-alpha.6-macos-arm64.dmg.sha256
+shasum -a 256 -c River-0.1.0-alpha.10-macos-arm64.dmg.sha256
 ```
 
 실제 Finder에서도 DMG를 열고 앱을 Applications로 복사한 다음 이미지를 추출하고 실행하세요. 공개 릴리스에는 DMG·SHA-256 파일·manifest를 함께 첨부하고, 실제 확인한 architecture·서명·notarization·실행 환경을 릴리스 정보에 기록합니다. 빌드·패키징 스크립트는 GitHub 업로드를 수행하지 않습니다.

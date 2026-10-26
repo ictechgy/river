@@ -20,7 +20,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
 use workbench_domain::*;
@@ -30,6 +30,24 @@ use workbench_runner as runner;
 // Includes the running worker and workers waiting for mutation ownership. A
 // cancelled worker retains its slot until it has actually exited.
 const MAX_ADMITTED_PREPARATIONS: usize = 8;
+
+// Ref creation and checkout each retain their independent 120s write budget.
+// Read phases also have intrinsic 30s caps; reserve enough for the serial
+// trust, baseline, reconciliation and postcondition observations around a recipe.
+fn preparation_repo_budget(recipe_seconds: u64) -> Duration {
+    Duration::from_secs(recipe_seconds.saturating_add(2 * 120 + 10 * 30))
+}
+
+fn preparation_read_control<T>(
+    cancelled: Arc<AtomicBool>,
+    budget: Duration,
+    work: impl FnOnce() -> T,
+) -> T {
+    git::with_read_cancellation(cancelled, || git::with_deadline(budget, work))
+}
+
+#[cfg(test)]
+type PreparationObserver = Box<dyn FnMut(&str, usize, &Operation) + Send>;
 
 fn request_budget_seconds(method: &str) -> u64 {
     match method {
@@ -86,6 +104,8 @@ pub struct Service {
     mutations: Mutex<()>,
     active: Mutex<BTreeMap<String, Arc<AtomicBool>>>,
     stopping: AtomicBool,
+    #[cfg(test)]
+    preparation_observer: Mutex<Option<PreparationObserver>>,
     _owner: File,
 }
 impl Service {
@@ -137,6 +157,8 @@ impl Service {
             [&config_hash],
         )?;
         let service = Arc::new(Self {
+            #[cfg(test)]
+            preparation_observer: Mutex::new(None),
             summaries: Mutex::new(BTreeMap::new()),
             repository_identities: workspace
                 .repositories
@@ -328,11 +350,7 @@ impl Service {
                     &["show", &format!("{base_oid}:{}", recipe.script)],
                 )?;
                 ensure!(
-                    hash(script)
-                        == hash(fs::read(runner::contained_file(
-                            &repo.path,
-                            &recipe.script
-                        )?)?),
+                    hash(script) == runner::script_hash(recipe, &repo.path)?,
                     "base_recipe_hash_mismatch"
                 );
                 for path in &recipe.writes {
@@ -545,10 +563,49 @@ impl Service {
         Ok(op)
     }
     fn run(&self, id: &str, cancelled: Arc<AtomicBool>) -> Result<Operation> {
-        let mut op = self.operation(id)?;
+        let op = self.operation(id)?;
+        let budgets: Vec<_> = op
+            .repos
+            .iter()
+            .map(|repo| {
+                let recipe_seconds = repo
+                    .plan
+                    .policy
+                    .recipe
+                    .as_ref()
+                    .map(|id| {
+                        self.workspace
+                            .recipe(id)
+                            .map(|recipe| recipe.timeout_seconds)
+                    })
+                    .transpose()?
+                    .unwrap_or(0);
+                Ok(preparation_repo_budget(recipe_seconds))
+            })
+            .collect::<Result<_>>()?;
+        let worker_budget = budgets
+            .iter()
+            .copied()
+            .fold(Duration::ZERO, Duration::saturating_add);
+        preparation_read_control(cancelled.clone(), worker_budget, || {
+            self.run_controlled(op, cancelled, &budgets)
+        })
+    }
+    #[cfg(test)]
+    fn observe_preparation(&self, phase: &str, index: usize, op: &Operation) {
+        if let Some(observer) = self.preparation_observer.lock().unwrap().as_mut() {
+            observer(phase, index, op);
+        }
+    }
+    fn run_controlled(
+        &self,
+        mut op: Operation,
+        cancelled: Arc<AtomicBool>,
+        budgets: &[Duration],
+    ) -> Result<Operation> {
         op.status = "running".into();
         self.save(&op)?;
-        for i in 0..op.repos.len() {
+        for (i, budget) in budgets.iter().enumerate().take(op.repos.len()) {
             // Ready is a completed preparation checkpoint, not the current review state.
             // User edits, staging and commits in this folder must survive a peer's retry.
             if op.repos[i].state == RepoState::Ready {
@@ -560,7 +617,10 @@ impl Service {
             }
             let plan = op.repos[i].plan.clone();
             let repo = self.workspace.repo(&plan.repo_id)?;
-            let result = (|| -> Result<()> {
+            let result = git::with_deadline(*budget, || -> Result<()> {
+                #[cfg(test)]
+                self.observe_preparation("before_source_read", i, &op);
+                git::check_deadline()?;
                 self.target(&plan.repo_id, None)?;
                 let _lock = repo_lock(&repo.path)?;
                 self.target(&plan.repo_id, None)?;
@@ -640,8 +700,7 @@ impl Service {
                 }
                 if op.repos[i].baseline.is_none() {
                     ensure!(
-                        git::git_bytes(&plan.worktree_path, &["status", "--porcelain=v1", "-z"])?
-                            .is_empty(),
+                        git::status_bytes(&plan.worktree_path)?.is_empty(),
                         "dirty_new_worktree"
                     );
                     op.repos[i].baseline = Some(git::preparation_snapshot(&plan.worktree_path)?);
@@ -666,6 +725,7 @@ impl Service {
                     {
                         op.repos[i].result_snapshot = Some(after);
                     } else {
+                        git::check_deadline()?;
                         verify_scope(
                             recipe,
                             &baseline,
@@ -676,7 +736,11 @@ impl Service {
                         self.save(&op)?;
                         let result =
                             runner::run(recipe, &plan.worktree_path, inputs, cancelled.clone());
-                        // Preserve last observation even on failure. A later external edit is drift.
+                        #[cfg(test)]
+                        self.observe_preparation("after_recipe", i, &op);
+                        // Record only a completed observation. Cancellation or a
+                        // deadline keeps the previous receipt/checkpoint intact;
+                        // neither failure justifies an unbounded recovery scan.
                         op.repos[i].result_snapshot =
                             Some(git::preparation_snapshot(&plan.worktree_path)?);
                         self.save(&op)?;
@@ -709,7 +773,7 @@ impl Service {
                 op.repos[i].error_code = None;
                 self.save(&op)?;
                 Ok(())
-            })();
+            });
             if let Err(error) = result {
                 let code = fail_code(&error);
                 op.repos[i].state = if code == "cancelled" {
@@ -1047,19 +1111,25 @@ fn reject_unknown_parameters(params: &Value, allowed: &[&str]) -> Result<()> {
 }
 
 fn verify_scope(recipe: &Recipe, before: &Snapshot, after: &Snapshot) -> Result<()> {
+    git::with_deadline(git::READ_PHASE_TIMEOUT, || {
+        verify_scope_inner(recipe, before, after)
+    })
+}
+fn verify_scope_inner(recipe: &Recipe, before: &Snapshot, after: &Snapshot) -> Result<()> {
+    git::check_deadline()?;
     ensure!(
         before.head == after.head
             && before.branch == after.branch
             && before.index_hash == after.index_hash,
         "unexpected_git_change"
     );
-    let keys: std::collections::BTreeSet<_> =
-        before.files.keys().chain(after.files.keys()).collect();
-    ensure!(
-        keys.into_iter()
-            .all(|k| before.files.get(k) == after.files.get(k) || recipe.writes.contains(k)),
-        "unexpected_changes"
-    );
+    for path in before.files.keys().chain(after.files.keys()) {
+        git::check_deadline()?;
+        ensure!(
+            before.files.get(path) == after.files.get(path) || recipe.writes.contains(path),
+            "unexpected_changes"
+        );
+    }
     Ok(())
 }
 pub fn repo_lock(path: &Path) -> Result<File> {
@@ -1211,6 +1281,113 @@ mod lifecycle_tests {
             assert!(start.elapsed() < Duration::from_secs(10));
             thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn preparation_control_bounds_workers_without_clamping_a_long_recipe() {
+        assert_eq!(preparation_repo_budget(300), Duration::from_secs(840));
+        assert!(preparation_repo_budget(300) > preparation_repo_budget(0));
+        let result =
+            preparation_read_control(Arc::new(AtomicBool::new(false)), Duration::ZERO, || {
+                git::with_deadline(git::READ_PHASE_TIMEOUT, git::check_deadline)
+            });
+        assert_eq!(result.unwrap_err().to_string(), "git_timeout");
+        git::check_deadline().unwrap();
+    }
+
+    #[test]
+    fn worker_cancellation_context_reaches_strict_git_reads_before_any_write() {
+        let (_temp, service, plan) = fixture("worker-read-cancel");
+        let gate = service.mutations.lock().unwrap();
+        let created = service.execute(&plan.id, "worker-read-cancel").unwrap();
+        let flag = service
+            .active
+            .lock()
+            .unwrap()
+            .get(&created.id)
+            .unwrap()
+            .clone();
+        let path = service
+            .workspace
+            .repo(&plan.repos[0].repo_id)
+            .unwrap()
+            .path
+            .clone();
+        *service.preparation_observer.lock().unwrap() = Some(Box::new(move |phase, index, _| {
+            if phase == "before_source_read" && index == 0 {
+                flag.store(true, Ordering::SeqCst);
+                assert_eq!(git::snapshot(&path).unwrap_err().to_string(), "cancelled");
+            }
+        }));
+        drop(gate);
+        let completed = terminal(&service, &created.id);
+        drained(&service);
+        assert_eq!(completed.status, "cancelled");
+        assert_eq!(completed.repos[0].state, RepoState::Cancelled);
+        assert_eq!(completed.repos[0].error_code.as_deref(), Some("cancelled"));
+        for repo in &completed.repos {
+            assert!(!repo.plan.worktree_path.exists());
+            assert!(
+                !git::ref_exists(
+                    &service.workspace.repo(&repo.plan.repo_id).unwrap().path,
+                    &repo.plan.branch_ref
+                )
+                .unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn post_recipe_cancellation_keeps_ready_peers_and_the_last_completed_checkpoint() {
+        let (_temp, service, plan) = fixture("post-recipe-read-cancel");
+        let gate = service.mutations.lock().unwrap();
+        let created = service
+            .execute(&plan.id, "post-recipe-read-cancel")
+            .unwrap();
+        let flag = service
+            .active
+            .lock()
+            .unwrap()
+            .get(&created.id)
+            .unwrap()
+            .clone();
+        let checkpoint = Arc::new(Mutex::new(None));
+        let captured = checkpoint.clone();
+        *service.preparation_observer.lock().unwrap() = Some(Box::new(move |phase, index, op| {
+            if phase == "after_recipe" && index == 1 {
+                *captured.lock().unwrap() = Some(op.repos[index].clone());
+                flag.store(true, Ordering::SeqCst);
+            }
+        }));
+        drop(gate);
+        let completed = terminal(&service, &created.id);
+        drained(&service);
+        let before = checkpoint.lock().unwrap().take().unwrap();
+        assert_eq!(completed.status, "cancelled");
+        assert_eq!(completed.repos[0].state, RepoState::Ready);
+        let cancelled = &completed.repos[1];
+        assert_eq!(cancelled.state, RepoState::Cancelled);
+        assert_eq!(cancelled.error_code.as_deref(), Some("cancelled"));
+        assert_eq!(cancelled.baseline, before.baseline);
+        assert_eq!(cancelled.result_snapshot, before.result_snapshot);
+        assert_eq!(cancelled.postcondition, before.postcondition);
+        assert_eq!(cancelled.attempts, before.attempts);
+        // The successful script write survives the interrupted observation.
+        assert_eq!(
+            runner::inspect(&cancelled.plan.worktree_path).unwrap(),
+            cancelled.plan.policy.inputs.clone().unwrap()
+        );
+        assert_eq!(
+            git::snapshot(
+                &service
+                    .workspace
+                    .repo(&cancelled.plan.repo_id)
+                    .unwrap()
+                    .path
+            )
+            .unwrap(),
+            cancelled.plan.source_snapshot
+        );
     }
 
     #[test]

@@ -112,6 +112,7 @@ struct RepositoryBranchContext: View {
     let name = store.repository?.snapshot.branch ?? store.taskRepository?.plan.branchRef ?? ""
     if !name.isEmpty { return name.replacingOccurrences(of: "refs/heads/", with: "") }
     if let head = store.repository?.snapshot.head, !head.isEmpty { return "HEAD · \(head.prefix(8))" }
+    if store.selectionCheckFailed { return "브랜치 확인 실패" }
     return store.pendingWorktree ? "브랜치 준비 대기" : "불러오는 중…"
   }
   var body: some View {

@@ -24,6 +24,22 @@ class PackagingTests(unittest.TestCase):
         return SimpleNamespace(version="0.1.0-alpha.1", build_number="2", output_dir=output,
                                app=app, sign_identity=None, notary_profile=None)
 
+    def provenance_fixture(self, root, relative="apps/macos/Sources/Hidden\nInput.swift"):
+        source = root / relative
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"// committed source\n")
+        environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+
+        def git(*args, **kwargs):
+            return subprocess.run(["git", "-C", root, *args], check=True, capture_output=True,
+                                  env=environment, **kwargs)
+
+        git("init", "-q")
+        git("add", ".")
+        git("-c", "user.name=Packaging Test", "-c", "user.email=packaging@example.invalid",
+            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "fixture")
+        return source, git
+
     def sparkle_fixture(self, package):
         """A versioned framework fixture with SwiftPM's actual provenance shape."""
         artifact = package / ".build/artifacts/sparkle/Sparkle/Sparkle.xcframework"
@@ -268,6 +284,120 @@ class PackagingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "untracked build inputs"):
                 package_macos.clean_source_snapshot(root)
 
+    def test_provenance_rejects_suppressed_tracked_paths_without_mutating_source_or_index(self):
+        for flag in ["--assume-unchanged", "--skip-worktree"]:
+            for relative in ["apps/macos/Sources/Hidden\nInput.swift", "docs/release-notes.md"]:
+                for modified in [False, True]:
+                    with self.subTest(flag=flag, relative=relative, modified=modified), \
+                            tempfile.TemporaryDirectory() as temporary:
+                        root = Path(temporary)
+                        source, git = self.provenance_fixture(root, relative)
+                        package_macos.clean_source_snapshot(root)
+                        git("update-index", flag, "--", relative)
+                        if modified:
+                            source.write_bytes(b"// hidden local modification\n")
+                        self.assertEqual(git("status", "--porcelain=v1").stdout, b"")
+                        source_before = source.read_bytes()
+                        index_before = (root / ".git/index").read_bytes()
+                        flags_before = git("ls-files", "-v", "-z").stdout
+                        for snapshot in [package_macos.source_snapshot, package_macos.clean_source_snapshot]:
+                            with self.assertRaisesRegex(ValueError, "assume-unchanged or skip-worktree"):
+                                snapshot(root)
+                        self.assertEqual(source.read_bytes(), source_before)
+                        self.assertEqual((root / ".git/index").read_bytes(), index_before)
+                        self.assertEqual(git("ls-files", "-v", "-z").stdout, flags_before)
+
+    def test_new_suppression_after_initial_provenance_invalidates_final_check(self):
+        for flag in ["--assume-unchanged", "--skip-worktree"]:
+            for modified in [False, True]:
+                with self.subTest(flag=flag, modified=modified), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    source, git = self.provenance_fixture(root)
+                    initial = package_macos.clean_source_snapshot(root)
+                    package_macos.verify_source_unchanged(initial, root)
+                    git("update-index", flag, "--", source.relative_to(root))
+                    if modified:
+                        source.write_bytes(b"// changed during packaging\n")
+                    source_before = source.read_bytes()
+                    index_before = (root / ".git/index").read_bytes()
+                    flags_before = git("ls-files", "-v", "-z").stdout
+                    with self.assertRaisesRegex(ValueError, "assume-unchanged or skip-worktree"):
+                        package_macos.verify_source_unchanged(initial, root)
+                    self.assertEqual(source.read_bytes(), source_before)
+                    self.assertEqual((root / ".git/index").read_bytes(), index_before)
+                    self.assertEqual(git("ls-files", "-v", "-z").stdout, flags_before)
+
+    def test_provenance_rechecks_suppression_before_returning_snapshot(self):
+        for flag in ["--assume-unchanged", "--skip-worktree"]:
+            with self.subTest(flag=flag), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source, git = self.provenance_fixture(root)
+                original_run = package_macos.run
+
+                def introduce_suppression(*argv, **kwargs):
+                    result = original_run(*argv, **kwargs)
+                    if "diff" in argv:
+                        git("update-index", flag, "--", source.relative_to(root))
+                        source.write_bytes(b"// changed while capturing provenance\n")
+                    return result
+
+                with patch.object(package_macos, "run", side_effect=introduce_suppression):
+                    with self.assertRaisesRegex(ValueError, "assume-unchanged or skip-worktree"):
+                        package_macos.clean_source_snapshot(root)
+
+    def test_provenance_rejects_malformed_index_listings(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.provenance_fixture(root)
+            original_run = package_macos.run
+            for listing in [b"H file", b"H\0", b"X file\0", b"H \0", b"\0"]:
+                def malformed_listing(*argv, **kwargs):
+                    if "ls-files" in argv and "-v" in argv:
+                        return SimpleNamespace(stdout=listing)
+                    return original_run(*argv, **kwargs)
+
+                with self.subTest(listing=listing), \
+                        patch.object(package_macos, "run", side_effect=malformed_listing):
+                    with self.assertRaisesRegex(ValueError, "invalid tracked index listing"):
+                        package_macos.clean_source_snapshot(root)
+
+    def test_provenance_still_rejects_unmerged_tracked_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            relative = "apps/macos/Sources/Conflict.swift"
+            source, git = self.provenance_fixture(root, relative)
+            blob = git("rev-parse", f"HEAD:{relative}").stdout.strip()
+            path = os.fsencode(relative)
+            entries = b"0 " + b"0" * len(blob) + b"\t" + path + b"\0"
+            entries += b"".join(b"100644 " + blob + b" " + str(stage).encode() + b"\t" + path + b"\0"
+                                for stage in [1, 2, 3])
+            git("update-index", "-z", "--index-info", input=entries)
+            self.assertIn(b"M " + path + b"\0", git("ls-files", "-v", "-z").stdout)
+            source_before = source.read_bytes()
+            index_before = (root / ".git/index").read_bytes()
+            with self.assertRaisesRegex(ValueError, "clean tracked source"):
+                package_macos.clean_source_snapshot(root)
+            self.assertEqual(source.read_bytes(), source_before)
+            self.assertEqual((root / ".git/index").read_bytes(), index_before)
+
+    def test_clean_provenance_checks_do_not_refresh_the_index(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, git = self.provenance_fixture(root)
+            # Give status a changed stat cache while keeping the committed bytes.
+            source_stat = source.stat()
+            os.utime(source, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns + 2_000_000_000))
+            source_before = source.read_bytes()
+            index_before = (root / ".git/index").read_bytes()
+            flags_before = git("ls-files", "-v", "-z").stdout
+            initial = package_macos.clean_source_snapshot(root)
+            self.assertEqual(initial["tracked_status"], "")
+            self.assertEqual(initial["tracked_patch_sha256"], hashlib.sha256(b"").hexdigest())
+            package_macos.verify_source_unchanged(initial, root)
+            self.assertEqual(source.read_bytes(), source_before)
+            self.assertEqual((root / ".git/index").read_bytes(), index_before)
+            self.assertEqual(git("ls-files", "-v", "-z").stdout, flags_before)
+
     def test_existing_artifact_set_cannot_be_overwritten(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)
@@ -345,8 +475,8 @@ class PackagingTests(unittest.TestCase):
                     package_macos.package(self.package_args(output, app=None))
             self.assertEqual([path.name for path in output.iterdir()], [".river-package.lock"])
         for required in ["/usr/bin/git --version", "xcode-select --install", "python3",
-                         "Remote operations require Apple Git 2.41 or later",
-                         "원격 작업에는 Apple Git 2.41 이상이 필요합니다",
+                         "Reading status and diffs requires Apple Git 2.43 or later",
+                         "상태와 Diff 조회에는 Apple Git 2.43 이상이 필요합니다",
                          "Full Xcode is not required", "전체 Xcode는 필요하지 않습니다",
                          "System Settings > Privacy & Security > Open Anyway",
                          "시스템 설정 > 개인정보 보호 및 보안 > 확인 없이 열기",

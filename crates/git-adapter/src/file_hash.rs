@@ -87,9 +87,33 @@ fn cache() -> std::sync::MutexGuard<'static, Cache> {
         .unwrap_or_else(|e| e.into_inner())
 }
 #[cfg(test)]
-static BYTES_READ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+thread_local! { static BYTES_READ: std::sync::atomic::AtomicU64 = const { std::sync::atomic::AtomicU64::new(0) }; }
+#[cfg(test)]
+type ChunkObserver = Box<dyn FnMut()>;
+#[cfg(test)]
+thread_local! { static CHUNK_OBSERVER: std::cell::RefCell<Option<ChunkObserver>> = const { std::cell::RefCell::new(None) }; }
+
+#[cfg(test)]
+fn observe_chunks<T>(observer: impl FnMut() + 'static, work: impl FnOnce() -> T) -> T {
+    struct Restore(Option<ChunkObserver>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CHUNK_OBSERVER.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+    let _restore = Restore(CHUNK_OBSERVER.with(|slot| slot.replace(Some(Box::new(observer)))));
+    work()
+}
 
 pub(super) fn value(path: &Path, metadata: &Metadata, presentation_cache: bool) -> Result<String> {
+    crate::with_deadline(crate::deadline::READ_PHASE_TIMEOUT, || {
+        value_inner(path, metadata, presentation_cache)
+    })
+}
+
+fn value_inner(path: &Path, metadata: &Metadata, presentation_cache: bool) -> Result<String> {
     crate::check_deadline()?;
     let stamp = Stamp::from(metadata);
     if presentation_cache
@@ -118,7 +142,17 @@ pub(super) fn value(path: &Path, metadata: &Metadata, presentation_cache: bool) 
         hasher.update(&buffer[..n]);
         size += n as u64;
         #[cfg(test)]
-        BYTES_READ.fetch_add(n as u64, std::sync::atomic::Ordering::SeqCst);
+        BYTES_READ.with(|bytes| bytes.fetch_add(n as u64, std::sync::atomic::Ordering::SeqCst));
+        #[cfg(test)]
+        CHUNK_OBSERVER.with(|slot| {
+            if let Some(observer) = slot.borrow_mut().as_mut() {
+                observer();
+            }
+        });
+        crate::check_deadline()?;
+        // A growing file cannot extend this strict read indefinitely, even
+        // when a writer keeps appending faster than the reader reaches EOF.
+        ensure!(size <= stamp.size, "stale_read_snapshot");
     }
     ensure!(
         size == stamp.size
@@ -137,6 +171,63 @@ pub(super) fn value(path: &Path, metadata: &Metadata, presentation_cache: bool) 
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn cancellation_interrupts_large_and_growing_strict_hashes_between_chunks() {
+        for growing in [false, true] {
+            let temp = tempfile::TempDir::new().unwrap();
+            let path = temp.path().join("large");
+            File::create(&path)
+                .unwrap()
+                .set_len(64 * 1024 * 1024)
+                .unwrap();
+            let metadata = fs::symlink_metadata(&path).unwrap();
+            let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let cancel = flag.clone();
+            let observed = path.clone();
+            let chunks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let seen = chunks.clone();
+            let error = crate::deadline::with_read_cancellation(flag, || {
+                observe_chunks(
+                    move || {
+                        seen.fetch_add(1, Ordering::SeqCst);
+                        if growing {
+                            OpenOptions::new()
+                                .write(true)
+                                .open(&observed)
+                                .unwrap()
+                                .set_len(128 * 1024 * 1024)
+                                .unwrap();
+                        }
+                        cancel.store(true, Ordering::SeqCst);
+                    },
+                    || value(&path, &metadata, false),
+                )
+            })
+            .unwrap_err();
+            assert_eq!(error.to_string(), "cancelled");
+            assert_eq!(chunks.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn growing_hash_does_not_read_beyond_the_original_size() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("growing");
+        fs::write(&path, vec![0; 64 * 1024]).unwrap();
+        let metadata = fs::symlink_metadata(&path).unwrap();
+        let append = path.clone();
+        let error = observe_chunks(
+            move || {
+                let file = OpenOptions::new().write(true).open(&append).unwrap();
+                file.set_len(file.metadata().unwrap().len() + 64 * 1024)
+                    .unwrap();
+            },
+            || value(&path, &metadata, false),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "stale_read_snapshot");
+    }
     #[test]
     fn oversized_sequential_scans_retain_a_stable_bounded_working_set() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -176,12 +267,12 @@ mod tests {
         let path = temp.path().join("data");
         fs::write(&path, vec![b'a'; 4096]).unwrap();
         let metadata = fs::symlink_metadata(&path).unwrap();
-        BYTES_READ.store(0, Ordering::SeqCst);
+        BYTES_READ.with(|bytes| bytes.store(0, Ordering::SeqCst));
         let first = value(&path, &metadata, true).unwrap();
         assert_eq!(value(&path, &metadata, true).unwrap(), first);
-        assert_eq!(BYTES_READ.load(Ordering::SeqCst), 4096);
+        assert_eq!(BYTES_READ.with(|bytes| bytes.load(Ordering::SeqCst)), 4096);
         assert_eq!(value(&path, &metadata, false).unwrap(), first);
-        assert_eq!(BYTES_READ.load(Ordering::SeqCst), 8192);
+        assert_eq!(BYTES_READ.with(|bytes| bytes.load(Ordering::SeqCst)), 8192);
         fs::write(&path, vec![b'b'; 4096]).unwrap();
         File::open(&path)
             .unwrap()
@@ -189,7 +280,10 @@ mod tests {
             .unwrap();
         let changed = value(&path, &fs::symlink_metadata(&path).unwrap(), true).unwrap();
         assert_ne!(changed, first);
-        assert_eq!(BYTES_READ.load(Ordering::SeqCst), 12_288);
+        assert_eq!(
+            BYTES_READ.with(|bytes| bytes.load(Ordering::SeqCst)),
+            12_288
+        );
         let large = temp.path().join("large");
         File::create(&large)
             .unwrap()
